@@ -626,12 +626,10 @@ public class BigtableIO {
       @ProcessElement
       public void processElement(ProcessContext c) throws Exception {
         checkForFailures();
-        System.out.println("we're about to call addcallback");
         Futures.addCallback(
             bigtableWriter.writeRecord(c.element()),
             new WriteExceptionCallback(c.element()),
             MoreExecutors.directExecutor());
-        System.out.println("we just finished calling addcallback");
         ++recordsWritten;
       }
 
