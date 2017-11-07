@@ -126,7 +126,7 @@ public class BigtableIOTest {
         public BigtableService apply(PipelineOptions input) {
           return service;
         }
-  };
+      };
   private static final BigtableOptions BIGTABLE_OPTIONS =
       new BigtableOptions.Builder()
           .setProjectId("options_project")
@@ -395,7 +395,7 @@ public class BigtableIOTest {
   }
 
   private void runReadTest(BigtableIO.Read read, List<Row> expected) {
-    PCollection<Row> rows = p.apply(read.getTableId() + "_" + read.getKeyRange(), read);
+    PCollection<Row> rows = p.apply(read.getTableId() + "_" + read.getKeyRanges(), read);
     PAssert.that(rows).containsInAnyOrder(expected);
     p.run();
   }
@@ -483,8 +483,10 @@ public class BigtableIOTest {
     makeTableData(table, numRows);
     service.setupSampleRowKeys(table, numSamples, bytesPerRow);
 
+    List<ByteKeyRange> keyRanges = new ArrayList<>();
+    keyRanges.add(service.getTableRange(table));
     BigtableSource source =
-        new BigtableSource(serviceFactory, table, null, service.getTableRange(table), null);
+        new BigtableSource(serviceFactory, table, null, keyRanges, null);
     assertSplitAtFractionExhaustive(source, null);
   }
 
@@ -500,8 +502,10 @@ public class BigtableIOTest {
     makeTableData(table, numRows);
     service.setupSampleRowKeys(table, numSamples, bytesPerRow);
 
+    List<ByteKeyRange> keyRanges = new ArrayList<>();
+    keyRanges.add(service.getTableRange(table));
     BigtableSource source =
-        new BigtableSource(serviceFactory, table, null, service.getTableRange(table), null);
+        new BigtableSource(serviceFactory, table, null, keyRanges, null);
     // With 0 items read, all split requests will fail.
     assertSplitAtFractionFails(source, 0, 0.1, null /* options */);
     assertSplitAtFractionFails(source, 0, 1.0, null /* options */);
@@ -529,12 +533,14 @@ public class BigtableIOTest {
     makeTableData(table, numRows);
     service.setupSampleRowKeys(table, numSamples, bytesPerRow);
 
+    List<ByteKeyRange> keyRanges = new ArrayList<>();
+    keyRanges.add(ByteKeyRange.ALL_KEYS);
     // Generate source and split it.
     BigtableSource source =
         new BigtableSource(serviceFactory,
             table,
             null /*filter*/,
-            ByteKeyRange.ALL_KEYS,
+            keyRanges,
             null /*size*/);
     List<BigtableSource> splits =
         source.split(numRows * bytesPerRow / numSamples, null /* options */);
@@ -557,13 +563,15 @@ public class BigtableIOTest {
     makeTableData(table, numRows);
     service.setupSampleRowKeys(table, numSamples, bytesPerRow);
 
+    List<ByteKeyRange> keyRanges = new ArrayList<>();
+    keyRanges.add(ByteKeyRange.ALL_KEYS);
     // Generate source and split it.
     BigtableSource source =
         new BigtableSource(serviceFactory,
-        table,
-        null /*filter*/,
-        ByteKeyRange.ALL_KEYS,
-        null /*size*/);
+            table,
+            null /*filter*/,
+            keyRanges,
+            null /*size*/);
     List<BigtableSource> splits = source.split(numRows * bytesPerRow / numSplits, null);
 
     // Test num splits and split equality.
@@ -584,11 +592,13 @@ public class BigtableIOTest {
     makeTableData(table, numRows);
     service.setupSampleRowKeys(table, numSamples, bytesPerRow);
 
+    List<ByteKeyRange> keyRanges = new ArrayList<>();
+    keyRanges.add(ByteKeyRange.ALL_KEYS);
     // Generate source and split it.
     RowFilter filter =
         RowFilter.newBuilder().setRowKeyRegexFilter(ByteString.copyFromUtf8(".*17.*")).build();
     BigtableSource source =
-        new BigtableSource(serviceFactory, table, filter, ByteKeyRange.ALL_KEYS, null /*size*/);
+        new BigtableSource(serviceFactory, table, filter, keyRanges, null /*size*/);
     List<BigtableSource> splits = source.split(numRows * bytesPerRow / numSplits, null);
 
     // Test num splits and split equality.
@@ -618,7 +628,7 @@ public class BigtableIOTest {
 
     assertThat(displayData, hasDisplayItem("rowFilter", rowFilter.toString()));
 
-    assertThat(displayData, hasDisplayItem("keyRange", keyRange.toString()));
+    assertThat(displayData, hasDisplayItem("keyRange 0", keyRange.toString()));
 
     // BigtableIO adds user-agent to options; assert only on key and not value.
     assertThat(displayData, hasDisplayItem("bigtableOptions"));
@@ -748,8 +758,10 @@ public class BigtableIOTest {
 
     makeTableData(table, numRows);
 
+    List<ByteKeyRange> keyRanges = new ArrayList<>();
+    keyRanges.add(ByteKeyRange.ALL_KEYS);
     BigtableSource source =
-        new BigtableSource(serviceFactory, table, null, ByteKeyRange.ALL_KEYS, null);
+        new BigtableSource(serviceFactory, table, null, keyRanges, null);
 
     BoundedReader<Row> reader = source.createReader(TestPipeline.testingPipelineOptions());
 
@@ -976,7 +988,7 @@ public class BigtableIOTest {
       while (rows.hasNext()) {
         entry = rows.next();
         if (!filter.apply(entry.getKey())
-            || !source.getRange().containsKey(makeByteKey(entry.getKey()))) {
+            || !rangesContainsKey(source.getRanges(), makeByteKey(entry.getKey()))) {
           // Does not match row filter or does not match source range. Skip.
           entry = null;
           continue;
@@ -994,6 +1006,15 @@ public class BigtableIOTest {
       // Set the current row and return true.
       currentRow = makeRow(entry.getKey(), entry.getValue());
       return true;
+    }
+
+    private boolean rangesContainsKey(List<ByteKeyRange> ranges, ByteKey key){
+      for (ByteKeyRange range : ranges) {
+        if (range.containsKey(key)) {
+          return true;
+        }
+      }
+      return false;
     }
 
     @Override

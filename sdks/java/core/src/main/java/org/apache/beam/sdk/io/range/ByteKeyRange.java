@@ -203,6 +203,25 @@ public final class ByteKeyRange implements Serializable {
     return progressScaled.divide(range).doubleValue() / Math.pow(2, 64);
   }
 
+  public BigInteger getSize() {
+    byte[] startBytes = startKey.getBytes();
+    byte[] endBytes = endKey.getBytes();
+    // If the endKey is unspecified, add a leading 1 byte to it and a leading 0 byte to all other
+    // keys, to get a concrete least upper bound for the desired range.
+    if (endKey.isEmpty()) {
+      startBytes = addHeadByte(startBytes, (byte) 0);
+      endBytes = addHeadByte(endBytes, (byte) 1);
+    }
+
+    // Pad to the longest of all 3 keys.
+    int paddedKeyLength = Math.max(startBytes.length, endBytes.length);
+    BigInteger rangeStartInt = paddedPositiveInt(startBytes, paddedKeyLength);
+    BigInteger rangeEndInt = paddedPositiveInt(endBytes, paddedKeyLength);
+
+    // Keys are equal subject to padding by 0.
+    return rangeEndInt.subtract(rangeStartInt);
+  }
+
   /**
    * Returns a {@link ByteKey} {@code key} such that {@code [startKey, key)} represents
    * approximately the specified fraction of the range {@code [startKey, endKey)}. The interpolation
