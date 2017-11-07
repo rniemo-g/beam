@@ -32,12 +32,14 @@ import com.google.cloud.bigtable.config.CredentialOptions;
 import com.google.cloud.bigtable.config.CredentialOptions.CredentialType;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.MoreObjects;
+import com.google.common.base.MoreObjects.ToStringHelper;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
 import com.google.common.util.concurrent.FutureCallback;
 import com.google.common.util.concurrent.Futures;
 import com.google.protobuf.ByteString;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
@@ -53,7 +55,7 @@ import org.apache.beam.sdk.io.BoundedSource;
 import org.apache.beam.sdk.io.BoundedSource.BoundedReader;
 import org.apache.beam.sdk.io.range.ByteKey;
 import org.apache.beam.sdk.io.range.ByteKeyRange;
-import org.apache.beam.sdk.io.range.ByteKeyRangeTracker;
+import org.apache.beam.sdk.io.range.ByteKeyRangesTracker;
 import org.apache.beam.sdk.options.PipelineOptions;
 import org.apache.beam.sdk.transforms.DoFn;
 import org.apache.beam.sdk.transforms.PTransform;
@@ -175,8 +177,8 @@ import org.slf4j.LoggerFactory;
  * pipeline. Please refer to the documentation of corresponding
  * {@link PipelineRunner PipelineRunners} for more details.
  */
-@Experimental(Experimental.Kind.SOURCE_SINK)
-public class BigtableIO {
+@Experimental(Experimental.Kind.SOURCE_SINK) public class BigtableIO {
+
   private static final Logger LOG = LoggerFactory.getLogger(BigtableIO.class);
 
   /**
@@ -187,13 +189,11 @@ public class BigtableIO {
    * specifies which table to read. A {@link RowFilter} may also optionally be specified using
    * {@link BigtableIO.Read#withRowFilter}.
    */
-  @Experimental
-  public static Read read() {
-    return new AutoValue_BigtableIO_Read.Builder()
-        .setKeyRange(ByteKeyRange.ALL_KEYS)
-        .setTableId("")
-        .setValidate(true)
-        .build();
+  @Experimental public static Read read() {
+    List<ByteKeyRange> ranges = new ArrayList<>();
+    ranges.add(ByteKeyRange.ALL_KEYS);
+    return new AutoValue_BigtableIO_Read.Builder().setKeyRanges(ranges).setTableId("")
+        .setValidate(true).build();
   }
 
   /**
@@ -203,12 +203,8 @@ public class BigtableIO {
    * the destination Cloud Bigtable instance, and a {@link BigtableIO.Write#withTableId tableId}
    * that specifies which table to write.
    */
-  @Experimental
-  public static Write write() {
-    return new AutoValue_BigtableIO_Write.Builder()
-        .setTableId("")
-        .setValidate(true)
-        .build();
+  @Experimental public static Write write() {
+    return new AutoValue_BigtableIO_Write.Builder().setTableId("").setValidate(true).build();
   }
 
   /**
@@ -217,38 +213,31 @@ public class BigtableIO {
    *
    * @see BigtableIO
    */
-  @Experimental(Experimental.Kind.SOURCE_SINK)
-  @AutoValue
-  public abstract static class Read extends PTransform<PBegin, PCollection<Row>> {
+  @Experimental(Experimental.Kind.SOURCE_SINK) @AutoValue public abstract static class Read
+      extends PTransform<PBegin, PCollection<Row>> {
 
-    @Nullable
-    abstract RowFilter getRowFilter();
+    @Nullable abstract RowFilter getRowFilter();
 
     /** Returns the range of keys that will be read from the table. */
-    @Nullable
-    public abstract ByteKeyRange getKeyRange();
+    @Nullable public abstract List<ByteKeyRange> getKeyRanges();
 
     /** Returns the table being read from. */
-    @Nullable
-    public abstract String getTableId();
+    @Nullable public abstract String getTableId();
 
-    @Nullable
-    abstract BigtableService getBigtableService();
+    @Nullable abstract BigtableService getBigtableService();
 
     /** Returns the Google Cloud Bigtable instance being read from, and other parameters. */
-    @Nullable
-    public abstract BigtableOptions getBigtableOptions();
+    @Nullable public abstract BigtableOptions getBigtableOptions();
 
     public abstract boolean getValidate();
 
     abstract Builder toBuilder();
 
-    @AutoValue.Builder
-    abstract static class Builder {
+    @AutoValue.Builder abstract static class Builder {
 
       abstract Builder setRowFilter(RowFilter filter);
 
-      abstract Builder setKeyRange(ByteKeyRange keyRange);
+      abstract Builder setKeyRanges(List<ByteKeyRange> keyRange);
 
       abstract Builder setTableId(String tableId);
 
@@ -286,8 +275,7 @@ public class BigtableIO {
       // TODO: is there a better way to clone a Builder? Want it to be immune from user changes.
       BigtableOptions options = optionsBuilder.build();
 
-      BigtableOptions.Builder clonedBuilder = options.toBuilder()
-          .setUseCachedDataPool(true);
+      BigtableOptions.Builder clonedBuilder = options.toBuilder().setUseCachedDataPool(true);
       BigtableOptions clonedOptions = clonedBuilder.build();
 
       return toBuilder().setBigtableOptions(clonedOptions).build();
@@ -311,7 +299,24 @@ public class BigtableIO {
      */
     public Read withKeyRange(ByteKeyRange keyRange) {
       checkArgument(keyRange != null, "keyRange can not be null");
-      return toBuilder().setKeyRange(keyRange).build();
+      List<ByteKeyRange> keyRanges = new ArrayList<>();
+      keyRanges.add(keyRange);
+      return toBuilder().setKeyRanges(keyRanges).build();
+    }
+
+    /**
+     * Returns a new {@link BigtableIO.Read} that will read only rows in the specified ranges.
+     * Ranges must not overlap.
+     *
+     * <p>Does not modify this object.
+     */
+    // TODO: check for overlaps...?
+    public Read withKeyRanges(List<ByteKeyRange> keyRanges) {
+      checkArgument(keyRanges != null, "keyRanges can not be null");
+      for (ByteKeyRange range : keyRanges) {
+        checkArgument(range != null, "keyRanges cannot hold null range");
+      }
+      return toBuilder().setKeyRanges(keyRanges).build();
     }
 
     /**
@@ -329,63 +334,59 @@ public class BigtableIO {
       return toBuilder().setValidate(false).build();
     }
 
-    @Override
-    public PCollection<Row> expand(PBegin input) {
+    @Override public PCollection<Row> expand(PBegin input) {
       checkArgument(getBigtableOptions() != null, "withBigtableOptions() is required");
       checkArgument(getTableId() != null && !getTableId().isEmpty(), "withTableId() is required");
-      BigtableSource source =
-          new BigtableSource(new SerializableFunction<PipelineOptions, BigtableService>() {
-            @Override
-            public BigtableService apply(PipelineOptions options) {
+      BigtableSource source = new BigtableSource(
+          new SerializableFunction<PipelineOptions, BigtableService>() {
+
+            @Override public BigtableService apply(PipelineOptions options) {
               return getBigtableService(options);
             }
-          }, getTableId(), getRowFilter(), getKeyRange(), null);
+          }, getTableId(), getRowFilter(), getKeyRanges(), null);
       return input.getPipeline().apply(org.apache.beam.sdk.io.Read.from(source));
     }
 
-    @Override
-    public void validate(PipelineOptions options) {
+    @Override public void validate(PipelineOptions options) {
       if (getValidate()) {
         try {
-          checkArgument(
-              getBigtableService(options).tableExists(getTableId()),
-              "Table %s does not exist",
-              getTableId());
+          checkArgument(getBigtableService(options).tableExists(getTableId()),
+              "Table %s does not exist", getTableId());
         } catch (IOException e) {
           LOG.warn("Error checking whether table {} exists; proceeding.", getTableId(), e);
         }
       }
     }
 
-    @Override
-    public void populateDisplayData(DisplayData.Builder builder) {
+    @Override public void populateDisplayData(DisplayData.Builder builder) {
       super.populateDisplayData(builder);
 
-      builder.add(DisplayData.item("tableId", getTableId())
-        .withLabel("Table ID"));
+      builder.add(DisplayData.item("tableId", getTableId()).withLabel("Table ID"));
 
       if (getBigtableOptions() != null) {
         builder.add(DisplayData.item("bigtableOptions", getBigtableOptions().toString())
-          .withLabel("Bigtable Options"));
+            .withLabel("Bigtable Options"));
       }
 
-      builder.addIfNotDefault(
-          DisplayData.item("keyRange", getKeyRange().toString()), ByteKeyRange.ALL_KEYS.toString());
+      List<ByteKeyRange> keyRanges = getKeyRanges();
+      for (int i = 0; i < keyRanges.size(); i++) {
+        builder.addIfNotDefault(DisplayData.item("keyRange " + i, keyRanges.get(i).toString()),
+            ByteKeyRange.ALL_KEYS.toString());
+      }
 
       if (getRowFilter() != null) {
-        builder.add(DisplayData.item("rowFilter", getRowFilter().toString())
-          .withLabel("Table Row Filter"));
+        builder.add(
+            DisplayData.item("rowFilter", getRowFilter().toString()).withLabel("Table Row Filter"));
       }
     }
 
-    @Override
-    public String toString() {
-      return MoreObjects.toStringHelper(Read.class)
-          .add("options", getBigtableOptions())
-          .add("tableId", getTableId())
-          .add("keyRange", getKeyRange())
-          .add("filter", getRowFilter())
-          .toString();
+    @Override public String toString() {
+      ToStringHelper helper = MoreObjects.toStringHelper(Read.class)
+          .add("options", getBigtableOptions()).add("tableId", getTableId());
+      for (int i = 0; i < getKeyRanges().size(); i++) {
+        helper.add("keyRange " + i, getKeyRanges().get(i));
+      }
+      return helper.add("filter", getRowFilter()).toString();
     }
 
     /**
@@ -409,18 +410,16 @@ public class BigtableIO {
      * <p>Also populate the credentials option from {@link GcpOptions#getGcpCredential()} if the
      * default credentials are being used on {@link BigtableOptions}.
      */
-    @VisibleForTesting
-    BigtableService getBigtableService(PipelineOptions pipelineOptions) {
+    @VisibleForTesting BigtableService getBigtableService(PipelineOptions pipelineOptions) {
       if (getBigtableService() != null) {
         return getBigtableService();
       }
       BigtableOptions.Builder clonedOptions = getBigtableOptions().toBuilder();
       clonedOptions.setUserAgent(pipelineOptions.getUserAgent());
-      if (getBigtableOptions().getCredentialOptions()
-          .getCredentialType() == CredentialType.DefaultCredentials) {
+      if (getBigtableOptions().getCredentialOptions().getCredentialType()
+          == CredentialType.DefaultCredentials) {
         clonedOptions.setCredentialOptions(
-            CredentialOptions.credential(
-                pipelineOptions.as(GcpOptions.class).getGcpCredential()));
+            CredentialOptions.credential(pipelineOptions.as(GcpOptions.class).getGcpCredential()));
       }
       return new BigtableServiceImpl(clonedOptions.build());
     }
@@ -432,28 +431,22 @@ public class BigtableIO {
    *
    * @see BigtableIO
    */
-  @Experimental(Experimental.Kind.SOURCE_SINK)
-  @AutoValue
-  public abstract static class Write
+  @Experimental(Experimental.Kind.SOURCE_SINK) @AutoValue public abstract static class Write
       extends PTransform<PCollection<KV<ByteString, Iterable<Mutation>>>, PDone> {
 
     /** Returns the table being written to. */
-    @Nullable
-    abstract String getTableId();
+    @Nullable abstract String getTableId();
 
-    @Nullable
-    abstract BigtableService getBigtableService();
+    @Nullable abstract BigtableService getBigtableService();
 
     /** Returns the Google Cloud Bigtable instance being written to, and other parameters. */
-    @Nullable
-    public abstract BigtableOptions getBigtableOptions();
+    @Nullable public abstract BigtableOptions getBigtableOptions();
 
     abstract boolean getValidate();
 
     abstract Builder toBuilder();
 
-    @AutoValue.Builder
-    abstract static class Builder {
+    @AutoValue.Builder abstract static class Builder {
 
       abstract Builder setTableId(String tableId);
 
@@ -492,10 +485,7 @@ public class BigtableIO {
 
       // Set useBulkApi to true for enabling bulk writes
       BigtableOptions.Builder clonedBuilder = options.toBuilder()
-          .setBulkOptions(
-              options.getBulkOptions().toBuilder()
-                  .setUseBulkApi(true)
-                  .build())
+          .setBulkOptions(options.getBulkOptions().toBuilder().setUseBulkApi(true).build())
           .setUseCachedDataPool(true);
       BigtableOptions clonedOptions = clonedBuilder.build();
       return toBuilder().setBigtableOptions(clonedOptions).build();
@@ -516,29 +506,25 @@ public class BigtableIO {
       return toBuilder().setTableId(tableId).build();
     }
 
-    @Override
-    public PDone expand(PCollection<KV<ByteString, Iterable<Mutation>>> input) {
+    @Override public PDone expand(PCollection<KV<ByteString, Iterable<Mutation>>> input) {
       checkArgument(getBigtableOptions() != null, "withBigtableOptions() is required");
       checkArgument(getTableId() != null && !getTableId().isEmpty(), "withTableId() is required");
 
       input.apply(ParDo.of(new BigtableWriterFn(getTableId(),
           new SerializableFunction<PipelineOptions, BigtableService>() {
-        @Override
-        public BigtableService apply(PipelineOptions options) {
-          return getBigtableService(options);
-        }
-      })));
+
+            @Override public BigtableService apply(PipelineOptions options) {
+              return getBigtableService(options);
+            }
+          })));
       return PDone.in(input.getPipeline());
     }
 
-    @Override
-    public void validate(PipelineOptions options) {
+    @Override public void validate(PipelineOptions options) {
       if (getValidate()) {
         try {
-          checkArgument(
-              getBigtableService(options).tableExists(getTableId()),
-              "Table %s does not exist",
-              getTableId());
+          checkArgument(getBigtableService(options).tableExists(getTableId()),
+              "Table %s does not exist", getTableId());
         } catch (IOException e) {
           LOG.warn("Error checking whether table {} exists; proceeding.", getTableId(), e);
         }
@@ -558,25 +544,20 @@ public class BigtableIO {
       return toBuilder().setBigtableService(bigtableService).build();
     }
 
-    @Override
-    public void populateDisplayData(DisplayData.Builder builder) {
+    @Override public void populateDisplayData(DisplayData.Builder builder) {
       super.populateDisplayData(builder);
 
-      builder.add(DisplayData.item("tableId", getTableId())
-        .withLabel("Table ID"));
+      builder.add(DisplayData.item("tableId", getTableId()).withLabel("Table ID"));
 
       if (getBigtableOptions() != null) {
         builder.add(DisplayData.item("bigtableOptions", getBigtableOptions().toString())
-          .withLabel("Bigtable Options"));
+            .withLabel("Bigtable Options"));
       }
     }
 
-    @Override
-    public String toString() {
-      return MoreObjects.toStringHelper(Write.class)
-          .add("options", getBigtableOptions())
-          .add("tableId", getTableId())
-          .toString();
+    @Override public String toString() {
+      return MoreObjects.toStringHelper(Write.class).add("options", getBigtableOptions())
+          .add("tableId", getTableId()).toString();
     }
 
     /**
@@ -587,18 +568,16 @@ public class BigtableIO {
      * <p>Also populate the credentials option from {@link GcpOptions#getGcpCredential()} if the
      * default credentials are being used on {@link BigtableOptions}.
      */
-    @VisibleForTesting
-    BigtableService getBigtableService(PipelineOptions pipelineOptions) {
+    @VisibleForTesting BigtableService getBigtableService(PipelineOptions pipelineOptions) {
       if (getBigtableService() != null) {
         return getBigtableService();
       }
       BigtableOptions.Builder clonedOptions = getBigtableOptions().toBuilder();
       clonedOptions.setUserAgent(pipelineOptions.getUserAgent());
-      if (getBigtableOptions().getCredentialOptions()
-          .getCredentialType() == CredentialType.DefaultCredentials) {
+      if (getBigtableOptions().getCredentialOptions().getCredentialType()
+          == CredentialType.DefaultCredentials) {
         clonedOptions.setCredentialOptions(
-            CredentialOptions.credential(
-                pipelineOptions.as(GcpOptions.class).getGcpCredential()));
+            CredentialOptions.credential(pipelineOptions.as(GcpOptions.class).getGcpCredential()));
       }
       return new BigtableServiceImpl(clonedOptions.build());
     }
@@ -608,45 +587,40 @@ public class BigtableIO {
       public BigtableWriterFn(String tableId,
           SerializableFunction<PipelineOptions, BigtableService> bigtableServiceFactory) {
         this.tableId = checkNotNull(tableId, "tableId");
-        this.bigtableServiceFactory =
-            checkNotNull(bigtableServiceFactory, "bigtableServiceFactory");
+        this.bigtableServiceFactory = checkNotNull(bigtableServiceFactory,
+            "bigtableServiceFactory");
         this.failures = new ConcurrentLinkedQueue<>();
       }
 
-      @StartBundle
-      public void startBundle(StartBundleContext c) throws IOException {
+      @StartBundle public void startBundle(StartBundleContext c) throws IOException {
         if (bigtableWriter == null) {
-          bigtableWriter = bigtableServiceFactory.apply(
-              c.getPipelineOptions()).openForWriting(tableId);
+          bigtableWriter = bigtableServiceFactory.apply(c.getPipelineOptions())
+              .openForWriting(tableId);
         }
         recordsWritten = 0;
       }
 
-      @ProcessElement
-      public void processElement(ProcessContext c) throws Exception {
+      @ProcessElement public void processElement(ProcessContext c) throws Exception {
         checkForFailures();
-        Futures.addCallback(
-            bigtableWriter.writeRecord(c.element()), new WriteExceptionCallback(c.element()));
+        Futures.addCallback(bigtableWriter.writeRecord(c.element()),
+            new WriteExceptionCallback(c.element()));
         ++recordsWritten;
       }
 
-      @FinishBundle
-      public void finishBundle() throws Exception {
+      @FinishBundle public void finishBundle() throws Exception {
         bigtableWriter.flush();
         checkForFailures();
         LOG.info("Wrote {} records", recordsWritten);
       }
 
-      @Teardown
-      public void tearDown() throws Exception {
+      @Teardown public void tearDown() throws Exception {
         if (bigtableWriter != null) {
           bigtableWriter.close();
           bigtableWriter = null;
         }
       }
 
-      @Override
-      public void populateDisplayData(DisplayData.Builder builder) {
+      @Override public void populateDisplayData(DisplayData.Builder builder) {
         builder.delegate(Write.this);
       }
 
@@ -678,12 +652,9 @@ public class BigtableIO {
           }
           suppressed.add(exc);
         }
-        String message =
-            String.format(
-                "At least %d errors occurred writing to Bigtable. First %d errors: %s",
-                i + failures.size(),
-                i,
-                logEntry.toString());
+        String message = String
+            .format("At least %d errors occurred writing to Bigtable. First %d errors: %s",
+                i + failures.size(), i, logEntry.toString());
         LOG.error(message);
         IOException exception = new IOException(message);
         for (BigtableWriteException e : suppressed) {
@@ -693,52 +664,48 @@ public class BigtableIO {
       }
 
       private class WriteExceptionCallback implements FutureCallback<MutateRowResponse> {
+
         private final KV<ByteString, Iterable<Mutation>> value;
 
         public WriteExceptionCallback(KV<ByteString, Iterable<Mutation>> value) {
           this.value = value;
         }
 
-        @Override
-        public void onFailure(Throwable cause) {
+        @Override public void onFailure(Throwable cause) {
           failures.add(new BigtableWriteException(value, cause));
         }
 
-        @Override
-        public void onSuccess(MutateRowResponse produced) {}
+        @Override public void onSuccess(MutateRowResponse produced) {
+        }
       }
     }
   }
 
   //////////////////////////////////////////////////////////////////////////////////////////
+
   /** Disallow construction of utility class. */
-  private BigtableIO() {}
+  private BigtableIO() {
+  }
 
   private static ByteKey makeByteKey(ByteString key) {
     return ByteKey.copyFrom(key.asReadOnlyByteBuffer());
   }
 
   static class BigtableSource extends BoundedSource<Row> {
-    public BigtableSource(
-        SerializableFunction<PipelineOptions, BigtableService> serviceFactory,
-        String tableId,
-        @Nullable RowFilter filter,
-        ByteKeyRange range,
+
+    public BigtableSource(SerializableFunction<PipelineOptions, BigtableService> serviceFactory,
+        String tableId, @Nullable RowFilter filter, List<ByteKeyRange> ranges,
         @Nullable Long estimatedSizeBytes) {
       this.serviceFactory = serviceFactory;
       this.tableId = tableId;
       this.filter = filter;
-      this.range = range;
+      this.ranges = ranges;
       this.estimatedSizeBytes = estimatedSizeBytes;
     }
 
-    @Override
-    public String toString() {
-      return MoreObjects.toStringHelper(BigtableSource.class)
-          .add("tableId", tableId)
-          .add("filter", filter)
-          .add("range", range)
-          .add("estimatedSizeBytes", estimatedSizeBytes)
+    @Override public String toString() {
+      return MoreObjects.toStringHelper(BigtableSource.class).add("tableId", tableId)
+          .add("filter", filter).add("ranges", ranges).add("estimatedSizeBytes", estimatedSizeBytes)
           .toString();
     }
 
@@ -746,25 +713,31 @@ public class BigtableIO {
     private final SerializableFunction<PipelineOptions, BigtableService> serviceFactory;
     private final String tableId;
     @Nullable private final RowFilter filter;
-    private final ByteKeyRange range;
+    private final List<ByteKeyRange> ranges;
     @Nullable private Long estimatedSizeBytes;
     @Nullable private transient List<SampleRowKeysResponse> sampleRowKeys;
 
-    protected BigtableSource withStartKey(ByteKey startKey) {
-      checkArgument(startKey != null, "startKey can not be null");
-      return new BigtableSource(
-          serviceFactory, tableId, filter, range.withStartKey(startKey), estimatedSizeBytes);
+    /**
+     * Creates a new {@link BigtableSource} with just one {@link ByteKeyRange}.
+     */
+    protected BigtableSource withSingleRange(ByteKeyRange range) {
+      checkArgument(range != null, "range can not be null");
+      List<ByteKeyRange> keyRanges = new ArrayList<>();
+      keyRanges.add(range);
+      return withRanges(keyRanges);
     }
 
-    protected BigtableSource withEndKey(ByteKey endKey) {
-      checkArgument(endKey != null, "endKey can not be null");
-      return new BigtableSource(
-          serviceFactory, tableId, filter, range.withEndKey(endKey), estimatedSizeBytes);
+    /**
+     * Creates a new {@link BigtableSource} with the list of {@link ByteKeyRange}s.
+     */
+    protected BigtableSource withRanges(List<ByteKeyRange> ranges) {
+      checkArgument(ranges != null, "ranges can not be null");
+      return new BigtableSource(serviceFactory, tableId, filter, ranges, estimatedSizeBytes);
     }
 
     protected BigtableSource withEstimatedSizeBytes(Long estimatedSizeBytes) {
       checkArgument(estimatedSizeBytes != null, "estimatedSizeBytes can not be null");
-      return new BigtableSource(serviceFactory, tableId, filter, range, estimatedSizeBytes);
+      return new BigtableSource(serviceFactory, tableId, filter, ranges, estimatedSizeBytes);
     }
 
     /**
@@ -777,23 +750,22 @@ public class BigtableIO {
       return serviceFactory.apply(pipelineOptions).getSampleRowKeys(this);
     }
 
-    @Override
-    public List<BigtableSource> split(
-        long desiredBundleSizeBytes, PipelineOptions options) throws Exception {
+    @Override public List<BigtableSource> split(long desiredBundleSizeBytes,
+        PipelineOptions options) throws Exception {
       // Update the desiredBundleSizeBytes in order to limit the
       // number of splits to maximumNumberOfSplits.
       long maximumNumberOfSplits = 4000;
       long sizeEstimate = getEstimatedSizeBytes(options);
-      desiredBundleSizeBytes =
-          Math.max(sizeEstimate / maximumNumberOfSplits, desiredBundleSizeBytes);
+      desiredBundleSizeBytes = Math
+          .max(sizeEstimate / maximumNumberOfSplits, desiredBundleSizeBytes);
 
       // Delegate to testable helper.
       return splitBasedOnSamples(desiredBundleSizeBytes, getSampleRowKeys(options));
     }
 
     /** Helper that splits this source into bundles based on Cloud Bigtable sampled row keys. */
-    private List<BigtableSource> splitBasedOnSamples(
-        long desiredBundleSizeBytes, List<SampleRowKeysResponse> sampleRowKeys) {
+    private List<BigtableSource> splitBasedOnSamples(long desiredBundleSizeBytes,
+        List<SampleRowKeysResponse> sampleRowKeys) {
       // There are no regions, or no samples available. Just scan the entire range.
       if (sampleRowKeys.isEmpty()) {
         LOG.info("Not splitting source {} because no sample row keys are available.", this);
@@ -802,55 +774,62 @@ public class BigtableIO {
 
       LOG.info(
           "About to split into bundles of size {} with sampleRowKeys length {} first element {}",
-          desiredBundleSizeBytes,
-          sampleRowKeys.size(),
-          sampleRowKeys.get(0));
+          desiredBundleSizeBytes, sampleRowKeys.size(), sampleRowKeys.get(0));
 
       // Loop through all sampled responses and generate splits from the ones that overlap the
       // scan range. The main complication is that we must track the end range of the previous
       // sample to generate good ranges.
       ByteKey lastEndKey = ByteKey.EMPTY;
+      // The largest end key of all the {@code ranges}.
+      ByteKey rangesEndKey = ByteKey.EMPTY;
       long lastOffset = 0;
       ImmutableList.Builder<BigtableSource> splits = ImmutableList.builder();
       for (SampleRowKeysResponse response : sampleRowKeys) {
         ByteKey responseEndKey = makeByteKey(response.getRowKey());
         long responseOffset = response.getOffsetBytes();
-        checkState(
-            responseOffset >= lastOffset,
-            "Expected response byte offset %s to come after the last offset %s",
-            responseOffset,
+        checkState(responseOffset >= lastOffset,
+            "Expected response byte offset %s to come after the last offset %s", responseOffset,
             lastOffset);
-
-        if (!range.overlaps(ByteKeyRange.of(lastEndKey, responseEndKey))) {
-          // This region does not overlap the scan, so skip it.
+        List<ByteKeyRange> overlappingRanges = new ArrayList<>();
+        for (ByteKeyRange range : ranges) {
+          if (range.overlaps(ByteKeyRange.of(lastEndKey, responseEndKey))) {
+            overlappingRanges.add(range);
+          }
+        }
+        if (overlappingRanges.isEmpty()) {
+          // No regions overlap the scan, so skip the scan.
           lastOffset = responseOffset;
           lastEndKey = responseEndKey;
           continue;
         }
 
-        // Calculate the beginning of the split as the larger of startKey and the end of the last
-        // split. Unspecified start is smallest key so is correctly treated as earliest key.
-        ByteKey splitStartKey = lastEndKey;
-        if (splitStartKey.compareTo(range.getStartKey()) < 0) {
-          splitStartKey = range.getStartKey();
-        }
+        for (ByteKeyRange range : overlappingRanges) {
 
-        // Calculate the end of the split as the smaller of endKey and the end of this sample. Note
-        // that range.containsKey handles the case when range.getEndKey() is empty.
-        ByteKey splitEndKey = responseEndKey;
-        if (!range.containsKey(splitEndKey)) {
-          splitEndKey = range.getEndKey();
-        }
+          if (rangesEndKey.compareTo(range.getEndKey()) < 0) {
+            rangesEndKey = range.getEndKey();
+          }
 
-        // We know this region overlaps the desired key range, and we know a rough estimate of its
-        // size. Split the key range into bundle-sized chunks and then add them all as splits.
-        long sampleSizeBytes = responseOffset - lastOffset;
-        List<BigtableSource> subSplits =
-            splitKeyRangeIntoBundleSizedSubranges(
-                sampleSizeBytes,
-                desiredBundleSizeBytes,
-                ByteKeyRange.of(splitStartKey, splitEndKey));
-        splits.addAll(subSplits);
+          // Calculate the beginning of the split as the larger of startKey and the end of the last
+          // split. Unspecified start is smallest key so is correctly treated as earliest key.
+          ByteKey splitStartKey = lastEndKey;
+          if (splitStartKey.compareTo(range.getStartKey()) < 0) {
+            splitStartKey = range.getStartKey();
+          }
+
+          // Calculate the end of the split as the smaller of endKey and the end of this sample.
+          // Note that range.containsKey handles the case when range.getEndKey() is empty.
+          ByteKey splitEndKey = responseEndKey;
+          if (!range.containsKey(splitEndKey)) {
+            splitEndKey = range.getEndKey();
+          }
+
+          // We know this region overlaps the desired key range, and we know a rough estimate of its
+          // size. Split the key range into bundle-sized chunks and then add them all as splits.
+          long sampleSizeBytes = (responseOffset - lastOffset) / overlappingRanges.size();
+          List<BigtableSource> subSplits = splitKeyRangeIntoBundleSizedSubranges(sampleSizeBytes,
+              desiredBundleSizeBytes, ByteKeyRange.of(splitStartKey, splitEndKey));
+          splits.addAll(subSplits);
+        }
 
         // Move to the next region.
         lastEndKey = responseEndKey;
@@ -860,9 +839,9 @@ public class BigtableIO {
       // We must add one more region after the end of the samples if both these conditions hold:
       //  1. we did not scan to the end yet (lastEndKey is concrete, not 0-length).
       //  2. we want to scan to the end (endKey is empty) or farther (lastEndKey < endKey).
-      if (!lastEndKey.isEmpty()
-          && (range.getEndKey().isEmpty() || lastEndKey.compareTo(range.getEndKey()) < 0)) {
-        splits.add(this.withStartKey(lastEndKey).withEndKey(range.getEndKey()));
+      if (!lastEndKey.isEmpty() && (rangesEndKey.isEmpty()
+          || lastEndKey.compareTo(rangesEndKey) < 0)) {
+        splits.add(this.withSingleRange(ByteKeyRange.of(lastEndKey, rangesEndKey)));
       }
 
       List<BigtableSource> ret = splits.build();
@@ -870,11 +849,10 @@ public class BigtableIO {
       return ret;
     }
 
-    @Override
-    public long getEstimatedSizeBytes(PipelineOptions options) throws IOException {
+    @Override public long getEstimatedSizeBytes(PipelineOptions options) throws IOException {
       // Delegate to testable helper.
       if (estimatedSizeBytes == null) {
-        estimatedSizeBytes = getEstimatedSizeBytesBasedOnSamples(getSampleRowKeys(options));
+        estimatedSizeBytes = getEstimatedSizeBytesBasedOnSamples(getSampleRowKeys(options), ranges);
       }
       return estimatedSizeBytes;
     }
@@ -883,7 +861,8 @@ public class BigtableIO {
      * Computes the estimated size in bytes based on the total size of all samples that overlap
      * the key range this source will scan.
      */
-    private long getEstimatedSizeBytesBasedOnSamples(List<SampleRowKeysResponse> samples) {
+    private long getEstimatedSizeBytesBasedOnSamples(List<SampleRowKeysResponse> samples,
+        List<ByteKeyRange> ranges) {
       long estimatedSizeBytes = 0;
       long lastOffset = 0;
       ByteKey currentStartKey = ByteKey.EMPTY;
@@ -897,8 +876,16 @@ public class BigtableIO {
           // Skip an empty region.
           lastOffset = currentOffset;
           continue;
-        } else if (range.overlaps(ByteKeyRange.of(currentStartKey, currentEndKey))) {
-          estimatedSizeBytes += currentOffset - lastOffset;
+        } else {
+          for (int i = 0; i < ranges.size(); i++) {
+            ByteKeyRange range = ranges.get(i);
+            if (range.overlaps(ByteKeyRange.of(currentStartKey, currentEndKey))) {
+              estimatedSizeBytes += currentOffset - lastOffset;
+              // We don't want to double our estimated size if two ranges overlap this sample
+              // region, so exit early.
+              break;
+            }
+          }
         }
         currentStartKey = currentEndKey;
         lastOffset = currentOffset;
@@ -906,53 +893,43 @@ public class BigtableIO {
       return estimatedSizeBytes;
     }
 
-    @Override
-    public BoundedReader<Row> createReader(PipelineOptions options) throws IOException {
+    @Override public BoundedReader<Row> createReader(PipelineOptions options) throws IOException {
       return new BigtableReader(this, serviceFactory.apply(options));
     }
 
-    @Override
-    public void validate() {
+    @Override public void validate() {
       checkArgument(!tableId.isEmpty(), "tableId cannot be empty");
     }
 
-    @Override
-    public void populateDisplayData(DisplayData.Builder builder) {
+    @Override public void populateDisplayData(DisplayData.Builder builder) {
       super.populateDisplayData(builder);
 
-      builder.add(DisplayData.item("tableId", tableId)
-          .withLabel("Table ID"));
+      builder.add(DisplayData.item("tableId", tableId).withLabel("Table ID"));
 
       if (filter != null) {
-        builder.add(DisplayData.item("rowFilter", filter.toString())
-            .withLabel("Table Row Filter"));
+        builder.add(DisplayData.item("rowFilter", filter.toString()).withLabel("Table Row Filter"));
       }
     }
 
-    @Override
-    public Coder<Row> getOutputCoder() {
+    @Override public Coder<Row> getOutputCoder() {
       return ProtoCoder.of(Row.class);
     }
 
     /** Helper that splits the specified range in this source into bundles. */
-    private List<BigtableSource> splitKeyRangeIntoBundleSizedSubranges(
-        long sampleSizeBytes, long desiredBundleSizeBytes, ByteKeyRange range) {
+    private List<BigtableSource> splitKeyRangeIntoBundleSizedSubranges(long sampleSizeBytes,
+        long desiredBundleSizeBytes, ByteKeyRange range) {
       // Catch the trivial cases. Split is small enough already, or this is the last region.
-      LOG.debug(
-          "Subsplit for sampleSizeBytes {} and desiredBundleSizeBytes {}",
-          sampleSizeBytes,
+      LOG.debug("Subsplit for sampleSizeBytes {} and desiredBundleSizeBytes {}", sampleSizeBytes,
           desiredBundleSizeBytes);
       if (sampleSizeBytes <= desiredBundleSizeBytes) {
         return Collections.singletonList(
-            this.withStartKey(range.getStartKey()).withEndKey(range.getEndKey()));
+            this.withSingleRange(ByteKeyRange.of(range.getStartKey(), range.getEndKey())));
       }
 
-      checkArgument(
-          sampleSizeBytes > 0, "Sample size %s bytes must be greater than 0.", sampleSizeBytes);
-      checkArgument(
-          desiredBundleSizeBytes > 0,
-          "Desired bundle size %s bytes must be greater than 0.",
-          desiredBundleSizeBytes);
+      checkArgument(sampleSizeBytes > 0, "Sample size %s bytes must be greater than 0.",
+          sampleSizeBytes);
+      checkArgument(desiredBundleSizeBytes > 0,
+          "Desired bundle size %s bytes must be greater than 0.", desiredBundleSizeBytes);
 
       int splitCount = (int) Math.ceil(((double) sampleSizeBytes) / (desiredBundleSizeBytes));
       List<ByteKey> splitKeys = range.split(splitCount);
@@ -961,18 +938,15 @@ public class BigtableIO {
       ByteKey prev = keys.next();
       while (keys.hasNext()) {
         ByteKey next = keys.next();
-        splits.add(
-            this
-                .withStartKey(prev)
-                .withEndKey(next)
-                .withEstimatedSizeBytes(sampleSizeBytes / splitCount));
+        splits.add(this.withSingleRange(ByteKeyRange.of(prev, next))
+            .withEstimatedSizeBytes(sampleSizeBytes / splitCount));
         prev = next;
       }
       return splits.build();
     }
 
-    public ByteKeyRange getRange() {
-      return range;
+    public List<ByteKeyRange> getRanges() {
+      return ranges;
     }
 
     public RowFilter getRowFilter() {
@@ -985,57 +959,52 @@ public class BigtableIO {
   }
 
   private static class BigtableReader extends BoundedReader<Row> {
+
     // Thread-safety: source is protected via synchronization and is only accessed or modified
     // inside a synchronized block (or constructor, which is the same).
     private BigtableSource source;
     private BigtableService service;
     private BigtableService.Reader reader;
-    private final ByteKeyRangeTracker rangeTracker;
+    private final ByteKeyRangesTracker rangeTracker;
     private long recordsReturned;
 
     public BigtableReader(BigtableSource source, BigtableService service) {
       this.source = source;
       this.service = service;
-      rangeTracker = ByteKeyRangeTracker.of(source.getRange());
+      rangeTracker = ByteKeyRangesTracker.of(source.getRanges());
     }
 
-    @Override
-    public boolean start() throws IOException {
+    @Override public boolean start() throws IOException {
       reader = service.createReader(getCurrentSource());
-      boolean hasRecord =
-          reader.start()
-              && rangeTracker.tryReturnRecordAt(true, makeByteKey(reader.getCurrentRow().getKey()))
-              || rangeTracker.markDone();
+      boolean hasRecord = reader.start() && rangeTracker
+          .tryReturnRecordAt(true, makeByteKey(reader.getCurrentRow().getKey())) || rangeTracker
+          .markDone();
       if (hasRecord) {
         ++recordsReturned;
       }
       return hasRecord;
     }
 
-    @Override
-    public synchronized BigtableSource getCurrentSource() {
+    @Override public synchronized BigtableSource getCurrentSource() {
       return source;
     }
 
-    @Override
-    public boolean advance() throws IOException {
-      boolean hasRecord =
-          reader.advance()
-              && rangeTracker.tryReturnRecordAt(true, makeByteKey(reader.getCurrentRow().getKey()))
-              || rangeTracker.markDone();
+    @Override public boolean advance() throws IOException {
+      boolean f = reader.advance();
+      boolean hasRecord = f && rangeTracker
+          .tryReturnRecordAt(true, makeByteKey(reader.getCurrentRow().getKey())) || rangeTracker
+          .markDone();
       if (hasRecord) {
         ++recordsReturned;
       }
       return hasRecord;
     }
 
-    @Override
-    public Row getCurrent() throws NoSuchElementException {
+    @Override public Row getCurrent() throws NoSuchElementException {
       return reader.getCurrentRow();
     }
 
-    @Override
-    public void close() throws IOException {
+    @Override public void close() throws IOException {
       LOG.info("Closing reader after reading {} records.", recordsReturned);
       if (reader != null) {
         reader.close();
@@ -1043,47 +1012,42 @@ public class BigtableIO {
       }
     }
 
-    @Override
-    public final Double getFractionConsumed() {
+    @Override public final Double getFractionConsumed() {
       return rangeTracker.getFractionConsumed();
     }
 
-    @Override
-    public final long getSplitPointsConsumed() {
+    @Override public final long getSplitPointsConsumed() {
       return rangeTracker.getSplitPointsConsumed();
     }
 
-    @Override
-    @Nullable
-    public final synchronized BigtableSource splitAtFraction(double fraction) {
+    @Override @Nullable public final synchronized BigtableSource splitAtFraction(double fraction) {
       ByteKey splitKey;
-      try {
-        splitKey = rangeTracker.getRange().interpolateKey(fraction);
-      } catch (RuntimeException e) {
+      List<ByteKeyRange> primaryKeyRanges = new ArrayList<>();
+      List<ByteKeyRange> residualKeyRanges = new ArrayList<>();
+      for (ByteKeyRange range : rangeTracker.getRanges()) {
+        try {
+          splitKey = range.interpolateKey(fraction);
+        } catch (RuntimeException e) {
+          LOG.info("{}: Failed to interpolate key for fraction {}.", range, fraction, e);
+          return null;
+        }
         LOG.info(
-            "{}: Failed to interpolate key for fraction {}.", rangeTracker.getRange(), fraction, e);
-        return null;
+            //TODO: rangeTracker -> range?
+            "Proposing to split {} at fraction {} (key {})", rangeTracker, fraction, splitKey);
+        try {
+          primaryKeyRanges.add(ByteKeyRange.of(range.getStartKey(), splitKey));
+          residualKeyRanges.add(ByteKeyRange.of(splitKey, range.getEndKey()));
+        } catch (RuntimeException e) {
+          LOG.info("{}: Interpolating for fraction {} yielded invalid split key {}.", range,
+              fraction, splitKey, e);
+          return null;
+        }
+        if (!rangeTracker.trySplitAtPosition(splitKey)) {
+          return null;
+        }
       }
-      LOG.info(
-          "Proposing to split {} at fraction {} (key {})", rangeTracker, fraction, splitKey);
-      BigtableSource primary;
-      BigtableSource residual;
-      try {
-         primary = source.withEndKey(splitKey);
-         residual =  source.withStartKey(splitKey);
-      } catch (RuntimeException e) {
-        LOG.info(
-            "{}: Interpolating for fraction {} yielded invalid split key {}.",
-            rangeTracker.getRange(),
-            fraction,
-            splitKey,
-            e);
-        return null;
-      }
-      if (!rangeTracker.trySplitAtPosition(splitKey)) {
-        return null;
-      }
-      this.source = primary;
+      BigtableSource residual = source.withRanges(residualKeyRanges);
+      this.source = source.withRanges(primaryKeyRanges);
       return residual;
     }
   }
@@ -1092,13 +1056,10 @@ public class BigtableIO {
    * An exception that puts information about the failed record being written in its message.
    */
   static class BigtableWriteException extends IOException {
+
     public BigtableWriteException(KV<ByteString, Iterable<Mutation>> record, Throwable cause) {
-      super(
-          String.format(
-              "Error mutating row %s with mutations %s",
-              record.getKey().toStringUtf8(),
-              record.getValue()),
-          cause);
+      super(String.format("Error mutating row %s with mutations %s", record.getKey().toStringUtf8(),
+          record.getValue()), cause);
     }
   }
 }
