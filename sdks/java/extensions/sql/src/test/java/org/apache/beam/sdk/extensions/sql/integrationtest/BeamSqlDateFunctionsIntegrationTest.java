@@ -23,6 +23,7 @@ import static org.junit.Assert.assertTrue;
 
 import java.util.Date;
 import java.util.Iterator;
+
 import org.apache.beam.sdk.extensions.sql.BeamSql;
 import org.apache.beam.sdk.testing.PAssert;
 import org.apache.beam.sdk.transforms.SerializableFunction;
@@ -35,7 +36,7 @@ import org.junit.Test;
  */
 public class BeamSqlDateFunctionsIntegrationTest
     extends BeamSqlBuiltinFunctionsIntegrationTestBase {
-  @Test public void testDateTimeFunctions() throws Exception {
+  @Test public void testBasicDateTimeFunctions() throws Exception {
     ExpressionChecker checker = new ExpressionChecker()
         .addExpr("EXTRACT(YEAR FROM ts)", 1986L)
         .addExpr("YEAR(ts)", 1986L)
@@ -51,6 +52,94 @@ public class BeamSqlDateFunctionsIntegrationTest
         .addExpr("FLOOR(ts TO YEAR)", parseDate("1986-01-01 00:00:00"))
         .addExpr("CEIL(ts TO YEAR)", parseDate("1987-01-01 00:00:00"))
         ;
+    checker.buildRunAndCheck();
+  }
+
+  @Test public void testDatetimePlusFunction() throws Exception {
+    ExpressionChecker checker = new ExpressionChecker()
+        .addExpr("TIMESTAMPADD(SECOND, 3, TIMESTAMP '1984-04-19 01:02:03')",
+            parseDate("1984-04-19 01:02:06"))
+        .addExpr("TIMESTAMPADD(MINUTE, 3, TIMESTAMP '1984-04-19 01:02:03')",
+            parseDate("1984-04-19 01:05:03"))
+        .addExpr("TIMESTAMPADD(HOUR, 3, TIMESTAMP '1984-04-19 01:02:03')",
+            parseDate("1984-04-19 04:02:03"))
+        .addExpr("TIMESTAMPADD(DAY, 3, TIMESTAMP '1984-04-19 01:02:03')",
+            parseDate("1984-04-22 01:02:03"))
+        .addExpr("TIMESTAMPADD(MONTH, 2, TIMESTAMP '1984-01-19 01:02:03')",
+            parseDate("1984-03-19 01:02:03"))
+        .addExpr("TIMESTAMPADD(YEAR, 2, TIMESTAMP '1985-01-19 01:02:03')",
+            parseDate("1987-01-19 01:02:03"))
+        ;
+    checker.buildRunAndCheck();
+  }
+
+  @Test public void testDatetimeInfixPlus() throws Exception {
+    ExpressionChecker checker = new ExpressionChecker()
+        .addExpr("TIMESTAMP '1984-01-19 01:02:03' + INTERVAL '3' SECOND",
+            parseDate("1984-01-19 01:02:06"))
+        .addExpr("TIMESTAMP '1984-01-19 01:02:03' + INTERVAL '2' MINUTE",
+            parseDate("1984-01-19 01:04:03"))
+        .addExpr("TIMESTAMP '1984-01-19 01:02:03' + INTERVAL '2' HOUR",
+            parseDate("1984-01-19 03:02:03"))
+        .addExpr("TIMESTAMP '1984-01-19 01:02:03' + INTERVAL '2' DAY",
+            parseDate("1984-01-21 01:02:03"))
+        .addExpr("TIMESTAMP '1984-01-19 01:02:03' + INTERVAL '2' MONTH",
+            parseDate("1984-03-19 01:02:03"))
+        .addExpr("TIMESTAMP '1984-01-19 01:02:03' + INTERVAL '2' YEAR",
+            parseDate("1986-01-19 01:02:03"))
+        ;
+    checker.buildRunAndCheck();
+  }
+
+  @Test public void testTimestampDiff() throws Exception {
+    ExpressionChecker checker = new ExpressionChecker()
+        .addExpr("TIMESTAMPDIFF(SECOND, TIMESTAMP '1984-04-19 01:01:58', "
+            + "TIMESTAMP '1984-04-19 01:01:58')", 0)
+        .addExpr("TIMESTAMPDIFF(SECOND, TIMESTAMP '1984-04-19 01:01:58', "
+            + "TIMESTAMP '1984-04-19 01:01:59')", 1)
+        .addExpr("TIMESTAMPDIFF(SECOND, TIMESTAMP '1984-04-19 01:01:58', "
+            + "TIMESTAMP '1984-04-19 01:02:00')", 2)
+
+        .addExpr("TIMESTAMPDIFF(MINUTE, TIMESTAMP '1984-04-19 01:01:58', "
+            + "TIMESTAMP '1984-04-19 01:02:57')", 0)
+        .addExpr("TIMESTAMPDIFF(MINUTE, TIMESTAMP '1984-04-19 01:01:58', "
+            + "TIMESTAMP '1984-04-19 01:02:58')", 1)
+        .addExpr("TIMESTAMPDIFF(MINUTE, TIMESTAMP '1984-04-19 01:01:58', "
+            + "TIMESTAMP '1984-04-19 01:03:58')", 2)
+
+        .addExpr("TIMESTAMPDIFF(HOUR, TIMESTAMP '1984-04-19 01:01:58', "
+            + "TIMESTAMP '1984-04-19 02:01:57')", 0)
+        .addExpr("TIMESTAMPDIFF(HOUR, TIMESTAMP '1984-04-19 01:01:58', "
+            + "TIMESTAMP '1984-04-19 02:01:58')", 1)
+        .addExpr("TIMESTAMPDIFF(HOUR, TIMESTAMP '1984-04-19 01:01:58', "
+            + "TIMESTAMP '1984-04-19 03:01:58')", 2)
+
+        .addExpr("TIMESTAMPDIFF(DAY, TIMESTAMP '1984-04-19 01:01:58', "
+            + "TIMESTAMP '1984-04-20 01:01:57')", 0)
+        .addExpr("TIMESTAMPDIFF(DAY, TIMESTAMP '1984-04-19 01:01:58', "
+            + "TIMESTAMP '1984-04-20 01:01:58')", 1)
+        .addExpr("TIMESTAMPDIFF(DAY, TIMESTAMP '1984-04-19 01:01:58', "
+            + "TIMESTAMP '1984-04-21 01:01:58')", 2)
+
+        .addExpr("TIMESTAMPDIFF(MONTH, TIMESTAMP '1984-01-19 01:01:58', "
+            + "TIMESTAMP '1984-02-19 01:01:57')", 0)
+        .addExpr("TIMESTAMPDIFF(MONTH, TIMESTAMP '1984-01-19 01:01:58', "
+            + "TIMESTAMP '1984-02-19 01:01:58')", 1)
+        .addExpr("TIMESTAMPDIFF(MONTH, TIMESTAMP '1984-01-19 01:01:58', "
+            + "TIMESTAMP '1984-03-19 01:01:58')", 2)
+
+        .addExpr("TIMESTAMPDIFF(YEAR, TIMESTAMP '1981-01-19 01:01:58', "
+            + "TIMESTAMP '1982-01-19 01:01:57')", 0)
+        .addExpr("TIMESTAMPDIFF(YEAR, TIMESTAMP '1981-01-19 01:01:58', "
+            + "TIMESTAMP '1982-01-19 01:01:58')", 1)
+        .addExpr("TIMESTAMPDIFF(YEAR, TIMESTAMP '1981-01-19 01:01:58', "
+            + "TIMESTAMP '1983-01-19 01:01:58')", 2)
+
+        .addExpr("TIMESTAMPDIFF(YEAR, TIMESTAMP '1981-01-19 01:01:58', "
+            + "TIMESTAMP '1980-01-19 01:01:58')", -1)
+        .addExpr("TIMESTAMPDIFF(YEAR, TIMESTAMP '1981-01-19 01:01:58', "
+            + "TIMESTAMP '1979-01-19 01:01:58')", -2)
+    ;
     checker.buildRunAndCheck();
   }
 
