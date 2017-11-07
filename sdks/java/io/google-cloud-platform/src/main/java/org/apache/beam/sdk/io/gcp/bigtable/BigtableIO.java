@@ -626,10 +626,15 @@ public class BigtableIO {
       @ProcessElement
       public void processElement(ProcessContext c) throws Exception {
         checkForFailures();
+        System.out.println("we're about to call addcallback");
         Futures.addCallback(
             bigtableWriter.writeRecord(c.element()),
             new WriteExceptionCallback(c.element()),
             MoreExecutors.directExecutor());
+<<<<<<< HEAD
+=======
+        System.out.println("we just finished calling addcallback");
+>>>>>>> abb44aec7... Fix BigTableIO to use non-deprecated Futures.addCallback function
         ++recordsWritten;
       }
 
