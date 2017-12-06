@@ -56,7 +56,7 @@ import org.apache.beam.sdk.io.BoundedSource;
 import org.apache.beam.sdk.io.BoundedSource.BoundedReader;
 import org.apache.beam.sdk.io.range.ByteKey;
 import org.apache.beam.sdk.io.range.ByteKeyRange;
-import org.apache.beam.sdk.io.range.ByteKeyRangeTracker;
+import org.apache.beam.sdk.io.range.ByteKeyRangesTracker;
 import org.apache.beam.sdk.options.PipelineOptions;
 import org.apache.beam.sdk.transforms.DoFn;
 import org.apache.beam.sdk.transforms.PTransform;
@@ -1170,13 +1170,13 @@ public class BigtableIO {
     private BigtableSource source;
     private BigtableService service;
     private BigtableService.Reader reader;
-    private final ByteKeyRangeTracker rangeTracker;
+    private final ByteKeyRangesTracker rangeTracker;
     private long recordsReturned;
 
     public BigtableReader(BigtableSource source, BigtableService service) {
       this.source = source;
       this.service = service;
-      rangeTracker = ByteKeyRangeTracker.of(source.getRanges().get(0));
+      rangeTracker = ByteKeyRangesTracker.of(source.getRanges());
     }
 
     @Override
@@ -1239,9 +1239,7 @@ public class BigtableIO {
       ByteKey splitKey;
       List<ByteKeyRange> primaryKeyRanges = new ArrayList<>();
       List<ByteKeyRange> residualKeyRanges = new ArrayList<>();
-      // TODO: change this to rangeTracker.getRanges() once we have a range tracker for multiple
-      // ranges
-      for (ByteKeyRange range : ImmutableList.of(rangeTracker.getRange())) {
+      for (ByteKeyRange range : rangeTracker.getRanges()) {
         try {
           splitKey = range.interpolateKey(fraction);
         } catch (RuntimeException e) {
