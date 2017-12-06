@@ -32,6 +32,7 @@ import com.google.cloud.bigtable.config.CredentialOptions;
 import com.google.cloud.bigtable.config.CredentialOptions.CredentialType;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.MoreObjects;
+import com.google.common.base.MoreObjects.ToStringHelper;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
 import com.google.common.util.concurrent.FutureCallback;
@@ -39,6 +40,7 @@ import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.MoreExecutors;
 import com.google.protobuf.ByteString;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
@@ -185,8 +187,10 @@ public class BigtableIO {
    */
   @Experimental
   public static Read read() {
-    return new AutoValue_BigtableIO_Read.Builder()
-        .setKeyRange(ByteKeyRange.ALL_KEYS)
+    List<ByteKeyRange> ranges = new ArrayList<>();
+    ranges.add(ByteKeyRange.ALL_KEYS);
+    return new AutoValue_BigtableIO_Read.Builder().
+        setKeyRanges(ranges)
         .setTableId("")
         .setValidate(true)
         .build();
@@ -230,7 +234,7 @@ public class BigtableIO {
 
     /** Returns the range of keys that will be read from the table. */
     @Nullable
-    public abstract ByteKeyRange getKeyRange();
+    public abstract List<ByteKeyRange> getKeyRanges();
 
     /** Returns the table being read from. */
     @Nullable
@@ -256,7 +260,7 @@ public class BigtableIO {
 
       abstract Builder setRowFilter(RowFilter filter);
 
-      abstract Builder setKeyRange(ByteKeyRange keyRange);
+      abstract Builder setKeyRanges(List<ByteKeyRange> keyRange);
 
       abstract Builder setTableId(String tableId);
 
@@ -351,7 +355,24 @@ public class BigtableIO {
      */
     public Read withKeyRange(ByteKeyRange keyRange) {
       checkArgument(keyRange != null, "keyRange can not be null");
-      return toBuilder().setKeyRange(keyRange).build();
+      List<ByteKeyRange> keyRanges = new ArrayList<>();
+      keyRanges.add(keyRange);
+      return toBuilder().setKeyRanges(keyRanges).build();
+    }
+
+    /**
+     * Returns a new {@link BigtableIO.Read} that will read only rows in the specified ranges.
+     * Ranges must not overlap.
+     *
+     * <p>Does not modify this object.
+     */
+    // TODO: check for overlaps...?
+    public Read withKeyRanges(List<ByteKeyRange> keyRanges) {
+      checkArgument(keyRanges != null, "keyRanges can not be null");
+      for (ByteKeyRange range : keyRanges) {
+        checkArgument(range != null, "keyRanges cannot hold null range");
+      }
+      return toBuilder().setKeyRanges(keyRanges).build();
     }
 
     /**
@@ -380,7 +401,7 @@ public class BigtableIO {
             public BigtableService apply(PipelineOptions options) {
               return getBigtableService(options);
             }
-          }, getTableId(), getRowFilter(), getKeyRange(), null);
+          }, getTableId(), getRowFilter(), getKeyRanges(), null);
       return input.getPipeline().apply(org.apache.beam.sdk.io.Read.from(source));
     }
 
@@ -420,8 +441,11 @@ public class BigtableIO {
             .withLabel("Bigtable Instnace Id"));
       }
 
-      builder.addIfNotDefault(
-          DisplayData.item("keyRange", getKeyRange().toString()), ByteKeyRange.ALL_KEYS.toString());
+      List<ByteKeyRange> keyRanges = getKeyRanges();
+      for (int i = 0; i < keyRanges.size(); i++) {
+        builder.addIfNotDefault(DisplayData.item("keyRange " + i, keyRanges.get(i).toString()),
+            ByteKeyRange.ALL_KEYS.toString());
+      }
 
       if (getRowFilter() != null) {
         builder.add(DisplayData.item("rowFilter", getRowFilter().toString())
@@ -431,14 +455,15 @@ public class BigtableIO {
 
     @Override
     public String toString() {
-      return MoreObjects.toStringHelper(Read.class)
+      ToStringHelper helper = MoreObjects.toStringHelper(Read.class)
           .add("options", getBigtableOptions())
-          .add("projectId", getProjectId())
-          .add("instanceId", getInstanceId())
           .add("tableId", getTableId())
-          .add("keyRange", getKeyRange())
-          .add("filter", getRowFilter())
-          .toString();
+          .add("projectId", getProjectId())
+          .add("instanceId", getInstanceId());
+      for (int i = 0; i < getKeyRanges().size(); i++) {
+        helper.add("keyRange " + i, getKeyRanges().get(i));
+      }
+      return helper.add("filter", getRowFilter()).toString();
     }
 
     /**
@@ -856,12 +881,12 @@ public class BigtableIO {
         SerializableFunction<PipelineOptions, BigtableService> serviceFactory,
         String tableId,
         @Nullable RowFilter filter,
-        ByteKeyRange range,
+        List<ByteKeyRange> ranges,
         @Nullable Long estimatedSizeBytes) {
       this.serviceFactory = serviceFactory;
       this.tableId = tableId;
       this.filter = filter;
-      this.range = range;
+      this.range = ranges.get(0); // TODO: change so BTSource uses all ranges.
       this.estimatedSizeBytes = estimatedSizeBytes;
     }
 
