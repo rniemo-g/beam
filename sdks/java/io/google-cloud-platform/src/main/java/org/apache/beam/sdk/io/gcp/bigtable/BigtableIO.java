@@ -369,6 +369,7 @@ public class BigtableIO {
     // TODO: check for overlaps...?
     public Read withKeyRanges(List<ByteKeyRange> keyRanges) {
       checkArgument(keyRanges != null, "keyRanges can not be null");
+      checkArgument(!keyRanges.isEmpty(), "keyRanges can not be empty");
       for (ByteKeyRange range : keyRanges) {
         checkArgument(range != null, "keyRanges cannot hold null range");
       }
@@ -457,9 +458,9 @@ public class BigtableIO {
     public String toString() {
       ToStringHelper helper = MoreObjects.toStringHelper(Read.class)
           .add("options", getBigtableOptions())
-          .add("tableId", getTableId())
           .add("projectId", getProjectId())
-          .add("instanceId", getInstanceId());
+          .add("instanceId", getInstanceId())
+          .add("tableId", getTableId());
       for (int i = 0; i < getKeyRanges().size(); i++) {
         helper.add("keyRange " + i, getKeyRanges().get(i));
       }
@@ -1239,30 +1240,40 @@ public class BigtableIO {
       ByteKey splitKey;
       List<ByteKeyRange> primaryKeyRanges = new ArrayList<>();
       List<ByteKeyRange> residualKeyRanges = new ArrayList<>();
-      for (ByteKeyRange range : rangeTracker.getRanges()) {
-        try {
-          splitKey = range.interpolateKey(fraction);
-        } catch (RuntimeException e) {
-          LOG.info(
-              "{}: Failed to interpolate key for fraction {}.", range, fraction, e);
-          return null;
-        }
+      try {
+        splitKey = rangeTracker.interpolateKey(fraction);
+      } catch (RuntimeException e) {
         LOG.info(
-            "Proposing to split {} at fraction {} (key {})", rangeTracker, fraction, splitKey);
-        try {
-          primaryKeyRanges.add(ByteKeyRange.of(range.getStartKey(), splitKey));
-          residualKeyRanges.add(ByteKeyRange.of(splitKey, range.getEndKey()));
-        } catch (RuntimeException e) {
-          LOG.info("{}: Interpolating for fraction {} yielded invalid split key {}.", range,
-              fraction, splitKey, e);
-          return null;
+            "{}: Failed to interpolate key for fraction {}.", rangeTracker, fraction, e);
+        return null;
+      }
+      LOG.info(
+          "Proposing to split {} at fraction {} (key {})", rangeTracker, fraction, splitKey);
+      for (ByteKeyRange range : rangeTracker.getRanges()) {
+        if (splitKey.compareTo(range.getEndKey()) > 0) {
+          primaryKeyRanges.add(range);
+        } else if (splitKey.compareTo(range.getStartKey()) < 0) {
+          residualKeyRanges.add(range);
+        } else {
+          try {
+            primaryKeyRanges.add(ByteKeyRange.of(range.getStartKey(), splitKey));
+            residualKeyRanges.add(ByteKeyRange.of(splitKey, range.getEndKey()));
+          } catch (RuntimeException e) {
+            LOG.info("{}: Interpolating for fraction {} yielded invalid split key {}.", range,
+                fraction, splitKey, e);
+            return null;
+          }
         }
-        if (!rangeTracker.trySplitAtPosition(splitKey)) {
-          return null;
-        }
+      }
+      if (!rangeTracker.trySplitAtPosition(splitKey)) {
+        System.out.println("couldn't split at position for key: "
+            + splitKey + " rangetracker: " + rangeTracker);
+        return null;
       }
       BigtableSource residual = source.withRanges(residualKeyRanges);
       this.source = source.withRanges(primaryKeyRanges);
+      System.out.println("residual_src: " + residual);
+      System.out.println("primary_src: " + this.source);
       return residual;
     }
   }
