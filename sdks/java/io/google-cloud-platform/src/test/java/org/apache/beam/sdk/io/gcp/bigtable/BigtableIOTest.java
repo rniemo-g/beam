@@ -383,13 +383,22 @@ public class BigtableIOTest {
   }
 
   private static List<Row> filterToRange(List<Row> rows, final ByteKeyRange range) {
+    return filterToRanges(rows, ImmutableList.of(range));
+  }
+
+  private static List<Row> filterToRanges(List<Row> rows, final List<ByteKeyRange> ranges) {
     return Lists.newArrayList(Iterables.filter(
         rows,
         new Predicate<Row>() {
           @Override
           public boolean apply(@Nullable Row input) {
             verifyNotNull(input, "input");
-            return range.containsKey(makeByteKey(input.getKey()));
+            for (ByteKeyRange range : ranges) {
+              if (range.containsKey(makeByteKey(input.getKey()))) {
+                return true;
+              }
+            }
+            return false;
           }
         }));
   }
@@ -444,6 +453,34 @@ public class BigtableIOTest {
     assertThat(suffixRows, hasItems(middleRows.toArray(new Row[]{})));
   }
 
+  /**
+   * Tests reading three key ranges with one read.
+   */
+  @Test
+  public void testReadingWithKeyRanges() throws Exception {
+    final String table = "TEST-KEY-RANGE-TABLE";
+    final int numRows = 1001;
+    List<Row> testRows = makeTableData(table, numRows);
+    ByteKey startKey1 = ByteKey.copyFrom("key000000100".getBytes());
+    ByteKey endKey1 = ByteKey.copyFrom("key000000300".getBytes());
+    ByteKey startKey2 = ByteKey.copyFrom("key000000400".getBytes());
+    ByteKey endKey2 = ByteKey.copyFrom("key000000700".getBytes());
+    ByteKey startKey3 = ByteKey.copyFrom("key000000800".getBytes());
+    ByteKey endKey3 = ByteKey.copyFrom("key000000900".getBytes());
+
+    service.setupSampleRowKeys(table, numRows / 10, "key000000100".length());
+
+    final ByteKeyRange range1 = ByteKeyRange.of(startKey1, endKey1);
+    final ByteKeyRange range2 = ByteKeyRange.of(startKey2, endKey2);
+    final ByteKeyRange range3 = ByteKeyRange.of(startKey3, endKey3);
+    List<ByteKeyRange> ranges = ImmutableList.of(range1, range2, range3);
+    List<Row> rangeRows = filterToRanges(testRows, ranges);
+    runReadTest(defaultRead.withTableId(table).withKeyRanges(ranges), rangeRows);
+
+    // range rows should be non-trivial (non-zero,non-all).
+    assertThat(rangeRows, allOf(hasSize(lessThan(numRows)), hasSize(greaterThan(0))));
+  }
+
   /** Tests reading all rows using a filter. */
   @Test
   public void testReadingWithFilter() throws Exception {
@@ -491,6 +528,30 @@ public class BigtableIOTest {
   }
 
   /**
+   * Tests dynamic work rebalancing exhaustively over multiple key ranges.
+   */
+  @Test
+  public void testReadingSplitAtFractionExhaustiveWithSeveralKeyRanges() throws Exception {
+    final String table = "TEST-FEW-ROWS-SPLIT-EXHAUSTIVE-TABLE-MULTIPLE-RANGES";
+    final int numRows = 10;
+    final int numSamples = 1;
+    final long bytesPerRow = 1L;
+    makeTableData(table, numRows);
+    service.setupSampleRowKeys(table, numSamples, bytesPerRow);
+    ByteKey splitKey1 = ByteKey.copyFrom("key000000003".getBytes());
+    ByteKey splitKey2 = ByteKey.copyFrom("key000000007".getBytes());
+
+    List<ByteKeyRange> keyRanges = new ArrayList<>();
+    ByteKeyRange tableRange = service.getTableRange(table);
+    keyRanges.add(tableRange.withEndKey(splitKey1));
+    keyRanges.add(tableRange.withStartKey(splitKey1).withEndKey(splitKey2));
+    keyRanges.add(tableRange.withStartKey(splitKey2));
+    BigtableSource source =
+        new BigtableSource(serviceFactory, table, null, keyRanges, null);
+    assertSplitAtFractionExhaustive(source, null);
+  }
+
+  /**
    * Unit tests of splitAtFraction.
    */
   @Test
@@ -521,7 +582,74 @@ public class BigtableIOTest {
     assertSplitAtFractionSucceedsAndConsistent(source, 6, 0.7, null /* options */);
   }
 
-  /** Tests reading all rows from a split table. */
+  /**
+   * Unit tests of splitAtFraction.
+   */
+  @Test
+  public void testReadingSplitAtFractionWithSeveralKeyRanges() throws Exception {
+    final String table = "TEST-SPLIT-AT-FRACTION-MULTIPLE-RANGES";
+    final int numRows = 10;
+    final int numSamples = 1;
+    final long bytesPerRow = 1L;
+    makeTableData(table, numRows);
+    service.setupSampleRowKeys(table, numSamples, bytesPerRow);
+    ByteKey splitKey1 = ByteKey.copyFrom("key000000003".getBytes());
+    ByteKey splitKey2 = ByteKey.copyFrom("key000000007".getBytes());
+
+    List<ByteKeyRange> keyRanges = new ArrayList<>();
+    ByteKeyRange tableRange = service.getTableRange(table);
+    keyRanges.add(tableRange.withEndKey(splitKey1));
+    keyRanges.add(tableRange.withStartKey(splitKey1).withEndKey(splitKey2));
+    keyRanges.add(tableRange.withStartKey(splitKey2));
+
+    BigtableSource source =
+        new BigtableSource(serviceFactory, table, null, keyRanges, null);
+    // With 0 items read, all split requests will fail.
+    assertSplitAtFractionFails(source, 0, 0.1, null /* options */);
+    assertSplitAtFractionFails(source, 0, 1.0, null /* options */);
+    // With 1 items read, all split requests past 1/10th will succeed.
+    assertSplitAtFractionSucceedsAndConsistent(source, 1, 0.333, null /* options */);
+    assertSplitAtFractionSucceedsAndConsistent(source, 1, 0.666, null /* options */);
+    // With 3 items read, all split requests past 3/10ths will succeed.
+    assertSplitAtFractionFails(source, 3, 0.2, null /* options */);
+    assertSplitAtFractionSucceedsAndConsistent(source, 3, 0.571, null /* options */);
+    assertSplitAtFractionSucceedsAndConsistent(source, 3, 0.9, null /* options */);
+    // With 6 items read, all split requests past 6/10ths will succeed.
+    assertSplitAtFractionFails(source, 6, 0.5, null /* options */);
+    assertSplitAtFractionSucceedsAndConsistent(source, 6, 0.7, null /* options */);
+  }
+
+  /**
+   * Unit tests of splitAtFraction. Tests splitting a source on
+   */
+  @Test
+  public void testReadingSplitAtFractionWithSeveralKeyRangesOnRangeBoundaries() throws Exception {
+    final String table = "TEST-SPLIT-AT-FRACTION-MULTIPLE-RANGES-BOUNDARIES";
+    final int numRows = 12;
+    final int numSamples = 1;
+    final long bytesPerRow = 1L;
+    makeTableData(table, numRows);
+    service.setupSampleRowKeys(table, numSamples, bytesPerRow);
+    ByteKey splitKey1 = ByteKey.copyFrom("key000000002".getBytes());
+    ByteKey splitKey2 = ByteKey.copyFrom("key000000006".getBytes());
+    ByteKey splitKey3 = ByteKey.copyFrom("key000000009".getBytes());
+
+    List<ByteKeyRange> keyRanges = new ArrayList<>();
+    ByteKeyRange tableRange = service.getTableRange(table);
+    keyRanges.add(tableRange.withEndKey(splitKey1)); // [0 - 2)
+    keyRanges.add(tableRange.withStartKey(splitKey1).withEndKey(splitKey2)); // [2 - 6)
+    keyRanges.add(tableRange.withStartKey(splitKey2).withEndKey(splitKey3)); // [6 - 9)
+    keyRanges.add(tableRange.withStartKey(splitKey3)); // [9 - 12)
+
+    BigtableSource source =
+        new BigtableSource(serviceFactory, table, null, keyRanges, null);
+    // With 1 items read, all split requests past 1/10th will succeed.
+    assertSplitAtFractionSucceedsAndConsistent(source, 1, 0.1666, null /* options */);
+    assertSplitAtFractionSucceedsAndConsistent(source, 1, 0.5, null /* options */);
+    assertSplitAtFractionSucceedsAndConsistent(source, 1, 0.75, null /* options */);
+  }
+
+  /** Tests reading all rows from a split table with several key ranges. */
   @Test
   public void testReadingWithSplits() throws Exception {
     final String table = "TEST-MANY-ROWS-SPLITS-TABLE";
@@ -547,6 +675,83 @@ public class BigtableIOTest {
 
     // Test num splits and split equality.
     assertThat(splits, hasSize(numSamples));
+    assertSourcesEqualReferenceSource(source, splits, null /* options */);
+  }
+
+  /** Tests reading all rows from a split table with several key ranges. */
+  @Test
+  public void testReadingWithSplitsWithSeveralKeyRanges() throws Exception {
+    final String table = "TEST-MANY-ROWS-SPLITS-TABLE-MULTIPLE-RANGES";
+    final int numRows = 1500;
+    final int numSamples = 10;
+    // Two more splits are generated because of the split keys at 500 and 1000.
+    // E.g. the split [450, 600) becomes [450, 500) and [500, 600).
+    final int numSplits = 12;
+    final long bytesPerRow = 100L;
+
+    // Set up test table data and sample row keys for size estimation and splitting.
+    makeTableData(table, numRows);
+    service.setupSampleRowKeys(table, numSamples, bytesPerRow);
+
+    ByteKey splitKey1 = ByteKey.copyFrom("key000000500".getBytes());
+    ByteKey splitKey2 = ByteKey.copyFrom("key000001000".getBytes());
+
+    List<ByteKeyRange> keyRanges = new ArrayList<>();
+    ByteKeyRange tableRange = service.getTableRange(table);
+    keyRanges.add(tableRange.withEndKey(splitKey1));
+    keyRanges.add(tableRange.withStartKey(splitKey1).withEndKey(splitKey2));
+    keyRanges.add(tableRange.withStartKey(splitKey2));
+    // Generate source and split it.
+    BigtableSource source =
+        new BigtableSource(serviceFactory,
+            table,
+            null /*filter*/,
+            keyRanges,
+            null /*size*/);
+    List<BigtableSource> splits = // 10,000
+        source.split(numRows * bytesPerRow / numSamples, null /* options */);
+
+    // Test num splits and split equality.
+    assertThat(splits, hasSize(numSplits));
+    assertSourcesEqualReferenceSource(source, splits, null /* options */);
+  }
+
+  /** Tests reading all rows from a split table with several key ranges that aren't adjacent. */
+  @Test
+  public void testReadingWithSplitsWithNonAdjacentSeveralKeyRanges() throws Exception {
+    final String table = "TEST-MANY-ROWS-SPLITS-TABLE-MULTIPLE-RANGES-NON-ADJACENT";
+    final int numRows = 1500;
+    final int numSamples = 10;
+    // Sample ranges for this table are [0, 150); [150, 300), etc. Since the key ranges don't
+    // include the range [500, 1000), we should generate splits: [0, 150); [150, 300); [300, 450);
+    // [450; 500); [1000; 1050); [1050, 1200); [1200, 1350); [1350, 1500).
+    final int numSplits = 8;
+    final long bytesPerRow = 100L;
+
+    // Set up test table data and sample row keys for size estimation and splitting.
+    makeTableData(table, numRows);
+    service.setupSampleRowKeys(table, numSamples, bytesPerRow);
+
+    ByteKey splitKey1 = ByteKey.copyFrom("key000000500".getBytes());
+    ByteKey splitKey2 = ByteKey.copyFrom("key000001000".getBytes());
+
+    List<ByteKeyRange> keyRanges = new ArrayList<>();
+    ByteKeyRange tableRange = service.getTableRange(table);
+    // Key ranges include [0, 500) and [1000, 1500)
+    keyRanges.add(tableRange.withEndKey(splitKey1));
+    keyRanges.add(tableRange.withStartKey(splitKey2));
+    // Generate source and split it.
+    BigtableSource source =
+        new BigtableSource(serviceFactory,
+            table,
+            null /*filter*/,
+            keyRanges,
+            null /*size*/);
+    List<BigtableSource> splits = // 10,000
+        source.split(numRows * bytesPerRow / numSamples, null /* options */);
+
+    // Test num splits and split equality.
+    assertThat(splits, hasSize(numSplits));
     assertSourcesEqualReferenceSource(source, splits, null /* options */);
   }
 
@@ -579,6 +784,41 @@ public class BigtableIOTest {
     assertSourcesEqualReferenceSource(source, splits, null /* options */);
   }
 
+  /** Tests reading all rows from a sub-split table with several key ranges. */
+  @Test
+  public void testReadingWithSubSplitsWithSeveralKeyRanges() throws Exception {
+    final String table = "TEST-MANY-ROWS-SPLITS-TABLE-MULTIPLE-RANGES";
+    final int numRows = 1000;
+    final int numSamples = 10;
+    final int numSplits = 20;
+    final long bytesPerRow = 100L;
+
+    // Set up test table data and sample row keys for size estimation and splitting.
+    makeTableData(table, numRows);
+    service.setupSampleRowKeys(table, numSamples, bytesPerRow);
+
+    ByteKey splitKey1 = ByteKey.copyFrom("key000000300".getBytes());
+    ByteKey splitKey2 = ByteKey.copyFrom("key000000700".getBytes());
+
+    List<ByteKeyRange> keyRanges = new ArrayList<>();
+    ByteKeyRange tableRange = service.getTableRange(table);
+    keyRanges.add(tableRange.withEndKey(splitKey1));
+    keyRanges.add(tableRange.withStartKey(splitKey1).withEndKey(splitKey2));
+    keyRanges.add(tableRange.withStartKey(splitKey2));
+    // Generate source and split it.
+    BigtableSource source =
+        new BigtableSource(serviceFactory,
+            table,
+            null /*filter*/,
+            keyRanges,
+            null /*size*/);
+    List<BigtableSource> splits = source.split(numRows * bytesPerRow / numSplits, null);
+
+    // Test num splits and split equality.
+    assertThat(splits, hasSize(numSplits));
+    assertSourcesEqualReferenceSource(source, splits, null /* options */);
+  }
+
   /** Tests reading all rows from a sub-split table. */
   @Test
   public void testReadingWithFilterAndSubSplits() throws Exception {
@@ -594,6 +834,39 @@ public class BigtableIOTest {
 
     List<ByteKeyRange> keyRanges = new ArrayList<>();
     keyRanges.add(ByteKeyRange.ALL_KEYS);
+    // Generate source and split it.
+    RowFilter filter =
+        RowFilter.newBuilder().setRowKeyRegexFilter(ByteString.copyFromUtf8(".*17.*")).build();
+    BigtableSource source =
+        new BigtableSource(serviceFactory, table, filter, keyRanges, null /*size*/);
+    List<BigtableSource> splits = source.split(numRows * bytesPerRow / numSplits, null);
+
+    // Test num splits and split equality.
+    assertThat(splits, hasSize(numSplits));
+    assertSourcesEqualReferenceSource(source, splits, null /* options */);
+  }
+
+  /** Tests reading all rows from a sub-split table with a filter and several key ranges. */
+  @Test
+  public void testReadingWithFilterAndSubSplitsWithSeveralKeyRanges() throws Exception {
+    final String table = "TEST-FILTER-SUB-SPLITS-MULTIPLE-RANGES";
+    final int numRows = 1700;
+    final int numSamples = 10;
+    final int numSplits = 20;
+    final long bytesPerRow = 100L;
+
+    // Set up test table data and sample row keys for size estimation and splitting.
+    makeTableData(table, numRows);
+    service.setupSampleRowKeys(table, numSamples, bytesPerRow);
+
+    ByteKey splitKey1 = ByteKey.copyFrom("key000000300".getBytes());
+    ByteKey splitKey2 = ByteKey.copyFrom("key000000700".getBytes());
+
+    List<ByteKeyRange> keyRanges = new ArrayList<>();
+    ByteKeyRange tableRange = service.getTableRange(table);
+    keyRanges.add(tableRange.withEndKey(splitKey1));
+    keyRanges.add(tableRange.withStartKey(splitKey1).withEndKey(splitKey2));
+    keyRanges.add(tableRange.withStartKey(splitKey2));
     // Generate source and split it.
     RowFilter filter =
         RowFilter.newBuilder().setRowKeyRegexFilter(ByteString.copyFromUtf8(".*17.*")).build();
