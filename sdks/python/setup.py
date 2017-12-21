@@ -98,11 +98,12 @@ REQUIRED_PACKAGES = [
     'avro>=1.8.1,<2.0.0',
     'crcmod>=1.7,<2.0',
     'dill==0.2.6',
-    'grpcio>=1.0,<2.0',
+    'grpcio>=1.0,<2',
     'httplib2>=0.8,<0.10',
     'mock>=1.0.1,<3.0.0',
     'oauth2client>=2.0.1,<4.0.0',
-    'protobuf>=3.2.0,<=3.3.0',
+    # grpcio 1.8.1 and above requires protobuf 3.5.0.post1.
+    'protobuf>=3.5.0.post1,<4',
     'pyyaml>=3.12,<4.0.0',
     'pyvcf>=0.6.8,<0.7.0',
     # Six 1.11.0 incompatible with apitools.
@@ -110,6 +111,7 @@ REQUIRED_PACKAGES = [
     'six>=1.9,<1.11',
     'typing>=3.6.0,<3.7.0',
     'futures>=3.1.1,<4.0.0',
+    'hdfs3>=0.3.0,<0.4.0',
     ]
 
 REQUIRED_SETUP_PACKAGES = [
@@ -118,10 +120,6 @@ REQUIRED_SETUP_PACKAGES = [
 
 REQUIRED_TEST_PACKAGES = [
     'pyhamcrest>=1.9,<2.0',
-    # Six required by nose plugins management.
-    # Six 1.11.0 incompatible with apitools.
-    # TODO(BEAM-2964): Remove the upper bound.
-    'six>=1.9,<1.11',
     ]
 
 GCP_REQUIREMENTS = [

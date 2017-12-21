@@ -54,7 +54,6 @@ import functools
 import glob
 import logging
 import os
-import re
 import shutil
 import sys
 import tempfile
@@ -82,7 +81,7 @@ BEAM_CONTAINER_VERSION = 'beam-2.2.0-20170928'
 # Update this version to the next version whenever there is a change that
 # requires changes to SDK harness container or SDK harness launcher.
 # This should be in the beam-[version]-[date] format, date is optional.
-BEAM_FNAPI_CONTAINER_VERSION = 'beam-2.3.0-20171121'
+BEAM_FNAPI_CONTAINER_VERSION = 'beam-2.3.0-20171219'
 
 # Standard file names used for staging files.
 WORKFLOW_TARBALL_FILE = 'workflow.tar.gz'
@@ -544,15 +543,7 @@ def _get_required_container_version(job_type=None):
   """
   # TODO(silviuc): Handle apache-beam versions when we have official releases.
   try:
-    version = pkg_resources.get_distribution(GOOGLE_PACKAGE_NAME).version
-    # We drop any pre/post parts of the version and we keep only the X.Y.Z
-    # format.  For instance the 0.3.0rc2 SDK version translates into 0.3.0.
-    container_version = (
-        '%s.%s.%s' % pkg_resources.parse_version(version)._version.release)
-    # We do, however, keep the ".dev" suffix if it is present.
-    if re.match(r'.*\.dev[0-9]*$', version):
-      container_version += '.dev'
-    return container_version
+    return pkg_resources.get_distribution(GOOGLE_PACKAGE_NAME).version
   except pkg_resources.DistributionNotFound:
     # This case covers Apache Beam end-to-end testing scenarios. All these tests
     # will run with a special container version.

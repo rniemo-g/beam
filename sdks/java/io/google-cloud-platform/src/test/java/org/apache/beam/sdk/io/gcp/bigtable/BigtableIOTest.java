@@ -114,11 +114,6 @@ public class BigtableIOTest {
   @Rule public ExpectedException thrown = ExpectedException.none();
   @Rule public ExpectedLogs logged = ExpectedLogs.none(BigtableIO.class);
 
-  /**
-   * These tests requires a static instance of the {@link FakeBigtableService} because the writers
-   * go through a serialization step when executing the test and would not affect passed-in objects
-   * otherwise.
-   */
   private static FakeBigtableService service;
   private static SerializableFunction<PipelineOptions, BigtableService> serviceFactory =
       new SerializableFunction<PipelineOptions, BigtableService>() {
@@ -140,6 +135,15 @@ public class BigtableIOTest {
   private static final TypeDescriptor<KV<ByteString, Iterable<Mutation>>> BIGTABLE_WRITE_TYPE =
       new TypeDescriptor<KV<ByteString, Iterable<Mutation>>>() {};
 
+  private static final SerializableFunction<BigtableOptions.Builder, BigtableOptions.Builder>
+    PORT_CONFIGURATOR =
+    new SerializableFunction<BigtableOptions.Builder, BigtableOptions.Builder>() {
+      @Override
+      public BigtableOptions.Builder apply(BigtableOptions.Builder input) {
+        return input.setPort(1234);
+      }
+    };
+
   @Before
   public void setup() throws Exception {
     service = new FakeBigtableService();
@@ -158,12 +162,14 @@ public class BigtableIOTest {
         BigtableIO.read().withBigtableOptions(BIGTABLE_OPTIONS)
             .withTableId("table")
             .withInstanceId("instance")
-            .withProjectId("project");
+            .withProjectId("project")
+            .withBigtableOptionsConfigurator(PORT_CONFIGURATOR);
     assertEquals("options_project", read.getBigtableOptions().getProjectId());
     assertEquals("options_instance", read.getBigtableOptions().getInstanceId());
-    assertEquals("instance", read.getInstanceId());
-    assertEquals("project", read.getProjectId());
+    assertEquals("instance", read.getBigtableConfig().getInstanceId());
+    assertEquals("project", read.getBigtableConfig().getProjectId());
     assertEquals("table", read.getTableId());
+    assertEquals(PORT_CONFIGURATOR, read.getBigtableConfig().getBigtableOptionsConfigurator());
   }
 
   @Test
@@ -215,11 +221,11 @@ public class BigtableIOTest {
             .withTableId("table")
             .withInstanceId("instance")
             .withProjectId("project");
-    assertEquals("table", write.getTableId());
+    assertEquals("table", write.getBigtableConfig().getTableId());
     assertEquals("options_project", write.getBigtableOptions().getProjectId());
     assertEquals("options_instance", write.getBigtableOptions().getInstanceId());
-    assertEquals("instance", write.getInstanceId());
-    assertEquals("project", write.getProjectId());
+    assertEquals("instance", write.getBigtableConfig().getInstanceId());
+    assertEquals("project", write.getBigtableConfig().getProjectId());
   }
 
   @Test
@@ -292,10 +298,12 @@ public class BigtableIOTest {
     BigtableService readService = BigtableIO.read()
         .withBigtableOptions(options)
         .withTableId("TEST-TABLE")
+        .getBigtableConfig()
         .getBigtableService(pipelineOptions);
     BigtableService writeService = BigtableIO.write()
         .withBigtableOptions(options)
         .withTableId("TEST-TABLE")
+        .getBigtableConfig()
         .getBigtableService(pipelineOptions);
     assertEquals(CredentialType.SuppliedCredentials,
         readService.getBigtableOptions().getCredentialOptions().getCredentialType());
@@ -314,10 +322,12 @@ public class BigtableIOTest {
     BigtableService readService = BigtableIO.read()
         .withBigtableOptions(options)
         .withTableId("TEST-TABLE")
+        .getBigtableConfig()
         .getBigtableService(pipelineOptions);
     BigtableService writeService = BigtableIO.write()
         .withBigtableOptions(options)
         .withTableId("TEST-TABLE")
+        .getBigtableConfig()
         .getBigtableService(pipelineOptions);
     assertEquals(CredentialType.None,
         readService.getBigtableOptions().getCredentialOptions().getCredentialType());
@@ -988,7 +998,7 @@ public class BigtableIOTest {
             Create.empty(
                 KvCoder.of(ByteStringCoder.of(), IterableCoder.of(ProtoCoder.of(Mutation.class)))));
 
-    // Exception will be thrown by write.validate() when write is applied.
+    // Exception will be thrown by write.validate() when writeToDynamic is applied.
     thrown.expect(IllegalArgumentException.class);
     thrown.expectMessage(String.format("Table %s does not exist", table));
 
