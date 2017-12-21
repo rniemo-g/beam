@@ -18,108 +18,91 @@
 package org.apache.beam.sdk.io.range;
 
 import static com.google.common.base.MoreObjects.toStringHelper;
+import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 
 import com.google.common.base.MoreObjects.ToStringHelper;
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.math.RoundingMode;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
-import javax.annotation.Nullable;
-import org.apache.beam.sdk.io.BoundedSource.BoundedReader;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 /**
- * A {@link RangeTracker} for {@link ByteKey ByteKeys} in {@link ByteKeyRange ByteKeyRanges}.
+ * A {@link RangeTracker} for {@link ByteKey ByteKeys} in multiple
+ * {@link ByteKeyRange ByteKeyRanges}. Represents multiple {@link ByteKeyRange ByteKeyRanges} as
+ * a single contiguous range, handling edge cases at the ends of each range.
  *
  * @see ByteKey
  * @see ByteKeyRange
  */
-public final class ByteKeyRangesTracker implements RangeTracker<ByteKey> {
-
-  private static final Logger LOG = LoggerFactory.getLogger(ByteKeyRangeTracker.class);
+public final class ByteKeyRangesTracker extends AbstractByteKeyRangeTracker {
 
   /** Instantiates a new {@link ByteKeyRangesTracker} with the specified range. */
   public static ByteKeyRangesTracker of(List<ByteKeyRange> ranges) {
     return new ByteKeyRangesTracker(new ArrayList<ByteKeyRange>(ranges));
   }
 
-  public synchronized boolean isDone() {
-    return done;
-  }
-
-  @Override public synchronized ByteKey getStartPosition() {
+  @Override
+  public synchronized ByteKey getStartPosition() {
     return ranges.get(0).getStartKey();
   }
 
-  @Override public synchronized ByteKey getStopPosition() {
+  @Override
+  public synchronized ByteKey getStopPosition() {
     return ranges.get(ranges.size() - 1).getEndKey();
   }
 
-  /** Returns the current range. */
+  @Override
+  public synchronized void setEndPosition(ByteKey end) {
+    for (int i = ranges.size() - 1; i >= 0; i--) {
+      ByteKeyRange range = ranges.get(i);
+      if (range.containsKey(end)) {
+        ranges.set(i, range.withEndKey(end));
+        calculateRangesSize();
+        return;
+      } else {
+        ranges.remove(range);
+      }
+    }
+    calculateRangesSize();
+  }
+
+  @Override
+  public synchronized void setStartPosition(ByteKey start) {
+    for (int i = 0; i < ranges.size(); i++) {
+      ByteKeyRange range = ranges.get(i);
+      if (range.containsKey(start)) {
+        ranges.set(i, range.withStartKey(start));
+        calculateRangesSize();
+        return;
+      } else {
+        ranges.remove(range);
+        i--;
+      }
+    }
+    calculateRangesSize();
+  }
+
+  @Override
+  public boolean containsKey(ByteKey key) {
+    for (ByteKeyRange range : ranges) {
+      if (range.containsKey(key)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** Returns the current list of ranges. */
   public synchronized List<ByteKeyRange> getRanges() {
     return ranges;
   }
 
-  @Override public synchronized boolean tryReturnRecordAt(boolean isAtSplitPoint,
-      ByteKey recordStart) {
-    if (done) {
-      return false;
-    }
-
-    checkState(!(position == null && !isAtSplitPoint), "The first record must be at a split point");
-    checkState(!(recordStart.compareTo(ranges.get(0).getStartKey()) < 0),
-        "Trying to return record which is before the start key");
-    checkState(!(position != null && recordStart.compareTo(position) < 0),
-        "Trying to return record which is before the last-returned record");
-
-    if (position == null) {
-      LOG.info("Adjusting range start from {} to {} as position of first returned record",
-          getStartPosition(), recordStart);
-      setStartPosition(recordStart);
-    }
-    position = recordStart;
-
-    if (isAtSplitPoint) {
-      if (!rangesContainKey(recordStart)) {
-        done = true;
-        return false;
-      }
-      ++splitPointsSeen;
-    }
-    return true;
-  }
-
-  @Override public synchronized boolean trySplitAtPosition(ByteKey splitPosition) {
-    // Sanity check.
-    if (!rangesContainKey(splitPosition)) {
-      LOG.warn("{}: Rejecting split request at {} because it is not within the range.", this,
-          splitPosition);
-      return false;
-    }
-
-    // Unstarted.
-    if (position == null) {
-      LOG.warn("{}: Rejecting split request at {} because no records have been returned.", this,
-          splitPosition);
-      return false;
-    }
-
-    // Started, but not after current position.
-    if (splitPosition.compareTo(position) <= 0) {
-      LOG.warn("{}: Rejecting split request at {} because it is not after current position {}.",
-          this, splitPosition, position);
-      return false;
-    }
-
-    setEndPosition(splitPosition);
-    return true;
-  }
-
-  @Override public synchronized double getFractionConsumed() {
+  @Override
+  public synchronized double getFractionConsumed() {
     if (position == null) {
       return 0;
     } else if (done) {
@@ -127,26 +110,25 @@ public final class ByteKeyRangesTracker implements RangeTracker<ByteKey> {
     } else if (position.compareTo(getStopPosition()) >= 0) {
       return 1.0;
     }
-    BigInteger sum = BigInteger.ZERO;
     BigInteger progress = BigInteger.ZERO;
     for (ByteKeyRange range : ranges) {
       BigInteger rangeSize = range.getSize();
       if (position.compareTo(range.getEndKey()) >= 0) {
         progress = progress.add(rangeSize);
       } else if (range.containsKey(position)) {
-        BigDecimal rangeSizeDecimal = new BigDecimal(rangeSize);
-        BigDecimal fraction = rangeSizeDecimal
-            .multiply(new BigDecimal(range.estimateFractionForKey(position)));
-        progress = progress.add(fraction.toBigInteger());
+        BigInteger positionValue = new BigInteger(position.getBytes());
+        BigInteger rangeStartValue = new BigInteger(range.getStartKey().getBytes());
+        progress = progress.add(positionValue.subtract(rangeStartValue));
+      } else {
+        break;
       }
-      sum = sum.add(rangeSize);
     }
 
     // Compute the progress (key-start)/(end-start) scaling by 2^64, dividing (which rounds),
     // and then scaling down after the division. This gives ample precision when converted to
     // double.
     BigInteger progressScaled = progress.shiftLeft(64);
-    return progressScaled.divide(sum).doubleValue() / Math.pow(2, 64);
+    return progressScaled.divide(rangesSize).doubleValue() / Math.pow(2, 64);
   }
 
   public synchronized long getSplitPointsConsumed() {
@@ -162,52 +144,41 @@ public final class ByteKeyRangesTracker implements RangeTracker<ByteKey> {
     }
   }
 
-  private synchronized void setStartPosition(ByteKey start) {
-    for (int i = 0; i < ranges.size(); i++) {
-      ByteKeyRange range = ranges.get(i);
-      if (range.containsKey(start)) {
-        ranges.set(i, range.withStartKey(start));
-        return;
-      } else {
-        ranges.remove(range);
-        i--;
-      }
-    }
-  }
-
-  private synchronized void setEndPosition(ByteKey end) {
-    for (int i = ranges.size() - 1; i >= 0; i--) {
-      ByteKeyRange range = ranges.get(i);
-      if (range.containsKey(end)) {
-        ranges.set(i, range.withEndKey(end));
-        return;
-      } else {
-        ranges.remove(range);
-        i++;
-      }
-    }
-  }
-
-  private synchronized boolean rangesContainKey(ByteKey key) {
+  public synchronized ByteKey interpolateKey(double fraction) {
+    checkArgument(
+        fraction >= 0.0 && fraction < 1.0, "Fraction %s must be in the range [0, 1)", fraction);
+    BigDecimal totalRangesSize = new BigDecimal(rangesSize);
+    BigDecimal remainingTotalSize = totalRangesSize.multiply(new BigDecimal(fraction));
     for (ByteKeyRange range : ranges) {
-      if (range.containsKey(key)) {
-        return true;
+      BigDecimal rangeSize = new BigDecimal(range.getSize());
+      if (rangeSize.compareTo(remainingTotalSize) <= 0){
+        remainingTotalSize = remainingTotalSize.subtract(rangeSize);
+      } else {
+        BigDecimal rangeFraction = remainingTotalSize.divide(rangeSize, 3, RoundingMode.FLOOR);
+        return range.interpolateKey(rangeFraction.doubleValue());
       }
     }
-    return false;
+    return null;
+  }
+
+  /**
+   * Calculates the combined estimated size of all ranges in this tracker. Must be called when
+   * {@code ranges} is changed.
+   */
+  private synchronized void calculateRangesSize(){
+    rangesSize = BigInteger.ZERO;
+    for (ByteKeyRange range : ranges) {
+      rangesSize = rangesSize.add(range.getSize());
+    }
   }
 
   ///////////////////////////////////////////////////////////////////////////////
   private List<ByteKeyRange> ranges;
-  @Nullable private ByteKey position;
-  private long splitPointsSeen;
-  private boolean done;
+  private BigInteger rangesSize;
 
   private ByteKeyRangesTracker(List<ByteKeyRange> ranges) {
-    this.ranges = ranges;
+    this.ranges = new ArrayList<>(ranges);
     position = null;
-    splitPointsSeen = 0L;
-    done = false;
 
     Collections.sort(this.ranges, new Comparator<ByteKeyRange>() {
 
@@ -215,30 +186,13 @@ public final class ByteKeyRangesTracker implements RangeTracker<ByteKey> {
         return range1.getStartKey().compareTo(range2.getStartKey());
       }
     });
-  }
-
-  /**
-   * Marks this range tracker as being done. Specifically, this will mark the current split point,
-   * if one exists, as being finished.
-   *
-   * <p>Always returns false, so that it can be used in an implementation of
-   * {@link BoundedReader#start()} or {@link BoundedReader#advance()} as follows:
-   *
-   * <pre> {@code
-   * public boolean start() {
-   *   return startImpl() && rangeTracker.tryReturnRecordAt(isAtSplitPoint, position)
-   *       || rangeTracker.markDone();
-   * }} </pre>
-   */
-  public synchronized boolean markDone() {
-    done = true;
-    return false;
+    calculateRangesSize();
   }
 
   @Override public synchronized String toString() {
     ToStringHelper helper = toStringHelper(ByteKeyRangesTracker.class);
     for (int i = 0; i < ranges.size(); i++) {
-      helper.add("range " + i, ranges.get(i));
+      helper.add("range" + i, ranges.get(i));
     }
     return helper.add("position", position).toString();
   }
